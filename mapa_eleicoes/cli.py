@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import hashlib
 import io
 import json
@@ -13,7 +14,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / 'data'
@@ -148,94 +149,119 @@ def first_key(columns: set[str], *choices: str) -> str:
     raise ValueError(f'Esperada uma destas colunas: {choices}; presentes: {sorted(columns)}')
 
 
-def classify(chunk: pd.DataFrame, number: str) -> pd.Series:
-    # TSE 2026 nao traz necessariamente CD_TIPO_VOTAVEL, mas traz NM_VOTAVEL.
-    typ = pd.Series('nominal', index=chunk.index, dtype='object')
-    if 'CD_TIPO_VOTAVEL' in chunk:
-        typ = chunk['CD_TIPO_VOTAVEL'].map({'1':'nominal','2':'legenda','3':'branco','4':'nulo'}).fillna(typ)
-    for col in ('DS_TIPO_VOTAVEL', 'TP_VOTO'):
-        if col in chunk:
-            series = chunk[col].str.lower()
-            for match, cls in [('legenda','legenda'),('branc','branco'),('nul','nulo')]:
-                typ.loc[series.str.contains(match, na=False)] = cls
-    # Codigos 95/96 normalmente sao reservados; nao dependemos deles se nomes estiverem disponiveis.
-    names = chunk.get('NM_VOTAVEL', pd.Series('', index=chunk.index)).str.lower()
-    typ.loc[names.str.contains('voto em branco', na=False)] = 'branco'
-    typ.loc[names.str.contains('voto nulo', na=False)] = 'nulo'
-    typ.loc[(chunk[number].str.strip() == '95') & (typ == 'nominal')] = 'branco'
-    typ.loc[(chunk[number].str.strip() == '96') & (typ == 'nominal')] = 'nulo'
-    return typ
+def classify_expr(columns: set[str], number_col: str) -> pl.Expr:
+    """Classificacao vetorizada. Chaves eleitorais permanecem texto."""
+    kind = pl.lit('nominal')
+    if 'CD_TIPO_VOTAVEL' in columns:
+        code = pl.col('CD_TIPO_VOTAVEL')
+        kind = (pl.when(code == '2').then(pl.lit('legenda'))
+                .when(code == '3').then(pl.lit('branco'))
+                .when(code == '4').then(pl.lit('nulo')).otherwise(kind))
+    for column in ('DS_TIPO_VOTAVEL', 'TP_VOTO'):
+        if column in columns:
+            value = pl.col(column).fill_null('').str.to_lowercase()
+            kind = (pl.when(value.str.contains('legenda')).then(pl.lit('legenda'))
+                    .when(value.str.contains('branc')).then(pl.lit('branco'))
+                    .when(value.str.contains('nul')).then(pl.lit('nulo')).otherwise(kind))
+    if 'NM_VOTAVEL' in columns:
+        name = pl.col('NM_VOTAVEL').fill_null('').str.to_lowercase()
+        kind = (pl.when(name.str.contains('voto em branco')).then(pl.lit('branco'))
+                .when(name.str.contains('voto nulo')).then(pl.lit('nulo')).otherwise(kind))
+    number = pl.col(number_col).str.strip_chars()
+    return (pl.when((number == '95') & (kind == 'nominal')).then(pl.lit('branco'))
+            .when((number == '96') & (kind == 'nominal')).then(pl.lit('nulo'))
+            .otherwise(kind).alias('tipo_voto'))
+
+
+def iter_polars_batches(reader: csv.DictReader, selected: list[str], size: int):
+    """Leitor CSV da stdlib e lotes Polars limitados; sem bufferizar ZIP inteiro."""
+    if size < 1:
+        raise ValueError('chunksize deve ser positivo')
+    schema = {name.strip().upper(): pl.String for name in selected}
+    batch = []
+    for record in reader:
+        batch.append({key.strip().upper(): record.get(key, '') for key in selected})
+        if len(batch) >= size:
+            yield pl.from_dicts(batch, schema=schema)
+            batch = []
+    if batch:
+        yield pl.from_dicts(batch, schema=schema)
 
 
 def process_archive(path: Path, year: int, outdir: Path | None = None, chunksize: int = 100_000) -> dict:
-    """Incremental: mantem contadores por municipio/zona, nunca todos os votos em RAM."""
+    """Agregacao em Polars por blocos, acumulando contagens sem carregar todo ZIP."""
     names = ensure_archive(path)
-    archive_uf = re.search(r'_([A-Z]{2})\.zip$', path.name.upper())
-    uf = archive_uf.group(1) if archive_uf else path.stem[-2:].upper()
+    match = re.search(r'_([A-Z]{2})\.zip$', path.name.upper())
+    uf = match.group(1) if match else path.stem[-2:].upper()
     outdir = outdir or DATA / 'processed' / str(year)
     counts: Counter[tuple] = Counter()
-    rows = 0
-    csv_seen = 0
+    rows = csv_seen = 0
     cargos: set[str] = set()
     turnos: set[int] = set()
-    with zipfile.ZipFile(path) as z:
+    with zipfile.ZipFile(path) as archive:
         for filename in names:
-            with z.open(filename) as stream:
-                try:
-                    reader = pd.read_csv(stream, sep=';', encoding='latin-1', dtype=str,
-                        keep_default_na=False, chunksize=chunksize,
-                        usecols=lambda c: c.upper() in INPUT_COLUMNS)
-                    for chunk in reader:
-                        chunk.columns = chunk.columns.str.upper()
-                        present = set(chunk.columns)
-                        if not REQUIRED.issubset(present):
-                            raise ValueError(f'{filename} sem campos {REQUIRED - present}')
-                        vote_number = first_key(present, 'NR_VOTAVEL', 'NR_CANDIDATO')
-                        vote_name = first_key(present, 'NM_VOTAVEL', 'NM_URNA_CANDIDATO')
-                        cargo = first_key(present, 'DS_CARGO', 'DS_CARGO_PERGUNTA')
-                        chunk['ano'] = year
-                        if 'ANO_ELEICAO' in chunk:
-                            chunk = chunk[chunk['ANO_ELEICAO'] == str(year)].copy()
-                        if chunk.empty:
-                            continue
-                        chunk['turno'] = pd.to_numeric(chunk['NR_TURNO'], errors='raise').astype('int16')
-                        chunk['uf'] = chunk['SG_UF'].str.strip().str.upper() if 'SG_UF' in chunk else uf
-                        chunk['cd_municipio_tse'] = chunk['CD_MUNICIPIO'].str.strip().str.lstrip('0').replace('', '0')
-                        chunk['municipio'] = chunk['NM_MUNICIPIO'].str.strip()
-                        chunk['zona'] = pd.to_numeric(chunk['NR_ZONA'], errors='raise').astype('int32')
-                        chunk['cargo'] = chunk[cargo].str.strip()
-                        chunk['numero'] = chunk[vote_number].str.strip()
-                        chunk['candidato'] = chunk[vote_name].str.strip()
-                        chunk['tipo_voto'] = classify(chunk, vote_number)
-                        chunk['votos'] = pd.to_numeric(chunk['QT_VOTOS'], errors='raise').astype('int64')
-                        if (chunk['votos'] < 0).any():
-                            raise ValueError(f'{filename}: votos negativos')
-                        rows += len(chunk)
-                        cargos.update(chunk['cargo'].unique().tolist())
-                        turnos.update(chunk['turno'].unique().tolist())
-                        grouped = chunk.groupby(COLUMNS[:-1], as_index=False, dropna=False, sort=False)['votos'].sum()
-                        for row in grouped.itertuples(index=False, name=None):
-                            counts[row[:-1]] += int(row[-1])
-                    csv_seen += 1
-                except (pd.errors.ParserError, UnicodeDecodeError) as exc:
-                    raise ValueError(f'Erro no CSV {filename} em {path.name}: {exc}') from exc
+            with archive.open(filename) as binary, io.TextIOWrapper(binary, encoding='latin-1', newline='') as stream:
+                reader = csv.DictReader(stream, delimiter=';')
+                if not reader.fieldnames:
+                    raise ValueError(f'{filename}: cabecalho CSV ausente')
+                selected = [name for name in reader.fieldnames if name.strip().upper() in INPUT_COLUMNS]
+                present = {name.strip().upper() for name in selected}
+                if not REQUIRED.issubset(present):
+                    raise ValueError(f'{filename} sem campos {REQUIRED - present}')
+                number_col = first_key(present, 'NR_VOTAVEL', 'NR_CANDIDATO')
+                name_col = first_key(present, 'NM_VOTAVEL', 'NM_URNA_CANDIDATO')
+                cargo_col = first_key(present, 'DS_CARGO', 'DS_CARGO_PERGUNTA')
+                for frame in iter_polars_batches(reader, selected, chunksize):
+                    if 'ANO_ELEICAO' in present:
+                        frame = frame.filter(pl.col('ANO_ELEICAO') == str(year))
+                    if frame.is_empty():
+                        continue
+                    code = pl.col('CD_MUNICIPIO').str.strip_chars().str.strip_chars_start('0')
+                    frame = frame.with_columns(
+                        pl.lit(year).cast(pl.Int32).alias('ano'),
+                        pl.col('NR_TURNO').cast(pl.Int16, strict=True).alias('turno'),
+                        (pl.col('SG_UF').str.strip_chars().str.to_uppercase()
+                            if 'SG_UF' in present else pl.lit(uf)).alias('uf'),
+                        pl.when(code == '').then(pl.lit('0')).otherwise(code).alias('cd_municipio_tse'),
+                        pl.col('NM_MUNICIPIO').str.strip_chars().alias('municipio'),
+                        pl.col('NR_ZONA').cast(pl.Int32, strict=True).alias('zona'),
+                        pl.col(cargo_col).str.strip_chars().alias('cargo'),
+                        pl.col(number_col).str.strip_chars().alias('numero'),
+                        pl.col(name_col).str.strip_chars().alias('candidato'),
+                        classify_expr(present, number_col),
+                        pl.col('QT_VOTOS').cast(pl.Int64, strict=True).alias('votos')
+                    ).select(COLUMNS)
+                    if (frame.get_column('votos') < 0).any():
+                        raise ValueError(f'{filename}: votos negativos')
+                    rows += frame.height
+                    cargos.update(frame.get_column('cargo').unique().to_list())
+                    turnos.update(frame.get_column('turno').unique().to_list())
+                    grouped = frame.group_by(COLUMNS[:-1]).agg(pl.col('votos').sum())
+                    for row in grouped.iter_rows():
+                        counts[row[:-1]] += int(row[-1])
+                csv_seen += 1
     if not csv_seen or not rows:
         raise ValueError(f'{path.name}: nenhuma linha util para {year}')
     outdir.mkdir(parents=True, exist_ok=True)
-    df = pd.DataFrame([(*k, v) for k,v in counts.items()], columns=COLUMNS)
-    df = df.sort_values(['turno','uf','cd_municipio_tse','zona','cargo','numero'])
-    destination = outdir / f'votos_{uf}.csv.gz'
+    schema = {name: pl.String for name in COLUMNS}
+    schema.update({'ano': pl.Int32, 'turno': pl.Int16, 'zona': pl.Int32, 'votos': pl.Int64})
+    df = pl.from_dicts([dict(zip(COLUMNS, (*key, votes))) for key, votes in counts.items()], schema=schema)
+    df = df.sort(['turno','uf','cd_municipio_tse','zona','cargo','numero'])
+    target = outdir / f'votos_{uf}.csv.gz'
     temp = outdir / f'votos_{uf}.part.csv.gz'
-    df.to_csv(temp, index=False, compression='gzip')
-    temp.replace(destination)
+    try:
+        with gzip.open(temp, 'wt', encoding='utf-8', newline='') as stream:
+            df.write_csv(stream)
+        temp.replace(target)
+    finally:
+        temp.unlink(missing_ok=True)
     meta = {'arquivo': path.name, 'csvs': csv_seen, 'ano': year, 'uf': uf,
-            'linhas_lidas': rows, 'linhas_agregadas': len(df),
-            'total_votos_linhas': int(df['votos'].sum()), 'cargos': sorted(cargos),
+            'linhas_lidas': rows, 'linhas_agregadas': df.height,
+            'total_votos_linhas': int(df.get_column('votos').sum()), 'cargos': sorted(cargos),
             'turnos': sorted(turnos), 'origem': 'TSE',
             'gerado_em_utc': datetime.now(timezone.utc).isoformat()}
     (outdir / f'votos_{uf}.json').write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding='utf-8')
     return meta
-
 
 def ingest(year: int, only_uf: str = '') -> tuple[list[dict], list[dict]]:
     raw = DATA / 'raw' / str(year)
@@ -279,37 +305,41 @@ def geo_import(file: Path, level: str):
 
 
 def crosswalk_import(file: Path):
-    """Aceita CSV com codigo TSE e codigo IBGE. Nunca faz join pelo nome da cidade."""
+    """Preserva codigos TSE e IBGE como strings: nunca inferir numericos."""
     if not file.exists():
         raise FileNotFoundError(file)
     if file.suffix.lower() == '.zip':
-        with zipfile.ZipFile(file) as z:
-            src = candidate_csv(z)[0]
-            with z.open(src) as f:
-                data = f.read()
-        df = pd.read_csv(io.BytesIO(data), sep=';', encoding='latin-1', dtype=str, keep_default_na=False)
+        with zipfile.ZipFile(file) as archive:
+            options = candidate_csv(archive)
+            if not options:
+                raise ValueError('ZIP sem CSV')
+            raw = archive.read(options[0])
     else:
-        try:
-            df = pd.read_csv(file, sep=';', encoding='utf-8-sig', dtype=str, keep_default_na=False)
-        except UnicodeDecodeError:
-            df = pd.read_csv(file, sep=';', encoding='latin-1', dtype=str, keep_default_na=False)
+        raw = file.read_bytes()
+    try:
+        text = raw.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        text = raw.decode('latin-1')
+    df = pl.read_csv(io.BytesIO(text.encode('utf-8')), separator=';', infer_schema=False)
     if len(df.columns) == 1:
         raise ValueError('CSV deve usar separador ; e conter codigos TSE/IBGE')
-    df.columns = [c.strip().upper() for c in df.columns]
+    df = df.rename({col: col.strip().upper() for col in df.columns})
     cols = set(df.columns)
     tse = first_key(cols,'CD_MUNICIPIO_TSE','COD_MUNICIPIO_TSE','CODIGO_TSE','CODIGO_MUNICIPIO_TSE','CD_MUN_TSE','CD_MUNICIPIO','COD_TSE')
     ibge = first_key(cols,'CD_MUNICIPIO_IBGE','COD_MUNICIPIO_IBGE','CODIGO_IBGE','CODIGO_MUNICIPIO_IBGE','CD_MUN_IBGE','COD_IBGE','CD_IBGE')
     uf = next((c for c in ('SG_UF','UF','SIGLA_UF') if c in cols), None)
-    mapped = pd.DataFrame({'cd_municipio_tse': df[tse].str.strip().str.lstrip('0').replace('', '0'),
-                           'codigo_ibge': df[ibge].str.strip(),
-                           'uf': df[uf].str.upper().str.strip() if uf else ''})
-    mapped = mapped[mapped['codigo_ibge'].str.fullmatch(r'\d{7}')].drop_duplicates()
-    if mapped.empty:
+    code = pl.col(tse).str.strip_chars().str.strip_chars_start('0')
+    mapped = df.select(
+        pl.when(code == '').then(pl.lit('0')).otherwise(code).alias('cd_municipio_tse'),
+        pl.col(ibge).str.strip_chars().alias('codigo_ibge'),
+        (pl.col(uf).str.strip_chars().str.to_uppercase() if uf else pl.lit('')).alias('uf')
+    ).filter(pl.col('codigo_ibge').str.contains(r'^\d{7}$')).unique()
+    if mapped.is_empty():
         raise ValueError('Sem linhas validas com codigo IBGE de 7 digitos')
-    out = DATA / 'reference' / 'tse_ibge.csv'
-    out.parent.mkdir(parents=True, exist_ok=True)
-    mapped.to_csv(out, index=False)
-    print(f'[TSE/IBGE] {len(mapped)} codigos -> {out}')
+    target = DATA / 'reference' / 'tse_ibge.csv'
+    target.parent.mkdir(parents=True, exist_ok=True)
+    mapped.write_csv(target)
+    print(f'[TSE/IBGE] {mapped.height} codigos -> {target}')
 
 
 def validate(year: int):
@@ -320,15 +350,17 @@ def validate(year: int):
     failures = []
     for meta_file in metas:
         meta = json.loads(meta_file.read_text(encoding='utf-8'))
-        p = folder / f'votos_{meta["uf"]}.csv.gz'
-        df = pd.read_csv(p)
-        valid = not df.empty and int(df.votos.sum()) == meta['total_votos_linhas'] and (df.votos >= 0).all()
-        print(f'[{"OK" if valid else "FAIL"}] {meta["uf"]}: {len(df):,} grupos, votos {df.votos.sum():,}')
+        path = folder / f'votos_{meta["uf"]}.csv.gz'
+        with gzip.open(path, 'rb') as source:
+            df = pl.read_csv(source, schema_overrides={'votos': pl.Int64}, infer_schema=False)
+        votes = df.get_column('votos').cast(pl.Int64, strict=True)
+        total = int(votes.sum() or 0)
+        valid = not df.is_empty() and total == meta['total_votos_linhas'] and bool((votes >= 0).all())
+        print(f'[{"OK" if valid else "FAIL"}] {meta["uf"]}: {df.height:,} grupos, votos {total:,}')
         if not valid:
             failures.append(meta['uf'])
     if failures:
         raise ValueError(f'Falha nos manifestos: {failures}')
-
 
 def main(argv: list[str] | None = None):
     cli = argparse.ArgumentParser(description='TSE -> Atlas Eleitoral. Invocar via Makefile.')
