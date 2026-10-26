@@ -218,3 +218,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Atlas Eleitoral: dados e malhas pesadas fora do Git
+.venv/
+*.part
+*.tmp
+data/raw/*
+data/processed/*
+data/geo/*
+data/reference/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/geo/.gitkeep
+!data/reference/.gitkeep

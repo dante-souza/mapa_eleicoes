@@ -1,0 +1,8 @@
+# uv gerencia a instalacao; Makefile e o unico ponto de entrada.
+pandas>=2.2,<3
+geopandas>=1.0,<2
+shapely>=2,<3
+folium>=0.18,<1
+streamlit>=1.41,<2
+streamlit-folium>=0.24,<1
+pytest>=8,<10
