@@ -8,3 +8,5 @@
 6. Cada linha de votação por seção traz o número de votos de um votável/cargo/seção. Para brancos, nulos, abstenções e totais de comparecimento, respeitar a semântica de cada tabela e impedir dupla contagem entre cargos.
 7. Fluxo Git: trabalhar em branch isolada, abrir PR de revisão; não alterar diretamente a `main` e não efetuar merge sem aprovação humana. Não modificar CI sem aprovação.
 8. Testes padrão: `make test` e `make validate`. `make test-offline`/`make ingest-offline` são apenas diagnósticos no sandbox sem rede, não substituem a instalação real por `uv`.
+9. **Motor tabular: Polars.** Nunca introduzir `import pandas` em pipeline, mapa ou testes. GeoPandas (dependencia interna de pandas) e exclusivamente geoespacial.
+10. **Fronteira Polars / GeoPandas:** nao usar `to_pandas()`, `GeoDataFrame.merge(Polars)` ou Arrow dtypes implicitamente. Converter apenas valores finais para registros Python via `geo_bridge.add_properties`. Testar codigo IBGE com zeros, Int64 de votos e serializacao GeoJSON.
