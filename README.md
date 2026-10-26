@@ -1,6 +1,6 @@
 # Atlas Eleitoral — TSE, zonas eleitorais e mapas interativos
 
-Protótipo independente em Python que agrupa votos de **seções → zonas → municípios**, com dados do TSE, geometria do IBGE/zonas, GeoPandas para preparar geometrias e Folium para navegação no mapa.
+Protótipo independente em Python que agrupa votos de **seções → zonas → municípios**, com dados do TSE, **Polars** para dados eleitorais, GeoPandas para preparar geometrias e Folium para navegação no mapa.
 
 ## Contrato operacional
 
@@ -73,3 +73,14 @@ requirements.txt        dependências gerenciadas por uv
 5. Não versionar dados brutos (`data/` está ignorado por `.gitignore`); manter manifesto, fonte e checksums para rastreabilidade.
 
 **Licenças/dados:** Dados públicos do TSE e malhas do IBGE sujeitos a suas respectivas condições de uso e atribuição; interface independente, sem vínculo com o G1.
+## Motor tabular Polars / compatibilidade geoespacial
+
+- **Polars** processa lotes de linhas TSE, agrega votos, filtra, faz joins TSE/IBGE, calcula vencedores, detalha zonas e exporta CSV. Nenhum import direto de pandas no codigo da aplicacao ou pipeline.
+- **GeoPandas** continua responsavel apenas por ler, transformar e exportar geometrias. A biblioteca possui dependencia interna de pandas; isto **nao** significa que a aplicacao use pandas como motor tabular.
+- **Fronteira de tipos:** `mapa_eleicoes/geo_bridge.py` recebe `pl.DataFrame`, percorre `iter_rows(named=True)` para escalares Python e atribui listas de `str/int/float` a uma copia da malha. **Nao** usar `pl.DataFrame.to_pandas()`, `GeoDataFrame.merge(pl.DataFrame)` ou Arrow extension dtypes implicitamente; incompatibilidades desta camada eram um risco historico.
+- Campos `uf`, `cd_municipio_tse`, `numero`, `codigo_ibge` sao sempre texto; `turno` e `zona` sao inteiros; `votos` e Int64. Leitura dos agregados usa `infer_schema=False` e casts explicitos; evita inferir codigo como float e perder zeros.
+- O pipeline mantém `votos_UF.csv.gz` e `tse_ibge.csv` no mesmo formato de antes. Não é necessario reimportar ZIPs anteriores para trocar o dashboard.
+- **Makefile continua sendo o unico ponto de entrada:** `make bootstrap`, `make test`, `make ingest`, `make validate`, `make run`.
+- `st.dataframe` suporta Polars diretamente. Para mapas, conversao deliberada para registros Python previne dependencia da conversao Polars↔pandas↔GeoPandas, especialmente com colunas Arrow e nulos.
+
+Criterios de validacao local: `make bootstrap`, `make test`, `make ingest ANO=2026 UF=RR`, `make validate ANO=2026`, `make run`. Confirme valores de votos identicos aos manifestos e teste poligonos municipais e zonas.
