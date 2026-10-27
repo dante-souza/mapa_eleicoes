@@ -17,7 +17,7 @@ from streamlit_folium import st_folium
 
 from mapa_eleicoes.geo_bridge import add_properties, ibge_code, zone_code
 from mapa_eleicoes.map_tiles import atlas_map
-from mapa_eleicoes.party_colors import color_for_number, PT_RED, PL_BLUE
+from mapa_eleicoes.party_colors import color_for_number
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
