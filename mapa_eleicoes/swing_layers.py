@@ -43,7 +43,6 @@ class DeltaZoomLayers(MacroElement):
                                             map.getPanes().overlayPane);
         arrowCanvas.style.cssText = "position:absolute;pointer-events:none;z-index:430;";
         var ratio = Math.min(window.devicePixelRatio || 1, 2);
-        var lastMode = null;
 
         function transparent(layer, level) {
             return {
@@ -101,8 +100,8 @@ class DeltaZoomLayers(MacroElement):
             ctx.lineJoin = "round";
             // Halo escuro para contraste tanto sobre a base quanto sobre o
             // preenchimento, sem alterar o vermelho/azul do Atlas.
-            ctx.strokeStyle = "#14141b";
-            ctx.lineWidth = lineWidth + 3.3;
+            ctx.strokeStyle = "#f8f8f2";
+            ctx.lineWidth = lineWidth + 3.7;
             shape();
             ctx.strokeStyle = delta > 0 ? "#d60828" : "#272d97";
             ctx.lineWidth = lineWidth;
