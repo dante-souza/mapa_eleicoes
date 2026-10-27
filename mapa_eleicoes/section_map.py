@@ -229,4 +229,11 @@ def render_site_points(
         if lat_min != lat_max or lon_min != lon_max:
             mapa.fit_bounds([[float(lat_min), float(lon_min)],
                              [float(lat_max), float(lon_max)]])
+        else:
+            # Ajuste apenas da CAMERA quando todos os locais coincidirem.
+            # Nao move nem inventa coordenadas das secoes eleitorais.
+            mapa.fit_bounds([
+                [float(lat_min) - 0.014, float(lon_min) - 0.014],
+                [float(lat_max) + 0.014, float(lon_max) + 0.014],
+            ])
     return mapa, total, total - sites.height if truncated else 0
