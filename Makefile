@@ -14,7 +14,7 @@ else
 PYTHON ?= python3
 VENV_PY := .venv/bin/python
 endif
-.PHONY: help bootstrap inspect import import-dir download ingest validate geo-import crosswalk run test doctor clean-processed prepare-data data-pack data-unpack
+.PHONY: help bootstrap inspect import import-dir download ingest validate geo-import crosswalk run test doctor clean-processed prepare-data data-pack data-unpack data-scan
 help:
 	@echo "Atlas Eleitoral / Make como ponto de entrada"
 	@echo "  make bootstrap                           instala uv + requirements"
@@ -26,10 +26,10 @@ help:
 	@echo "  make crosswalk FILE=de_para.csv         importa correspondencia TSE/IBGE"
 	@echo "  make geo-import FILE=malha.gpkg          prepara GeoJSON municipal"
 	@echo "  make geo-import FILE=zonas.geojson LEVEL=zona"
-	@echo "  make prepare-data ANO=2026 [AUX=1]      importa, processa e valida ZIPs da pasta data/"
+	@echo "  make prepare-data ANO=2026 DIR=C:/Downloads   le ZIPs de DIR e processa"
 	@echo "  make data-pack ANO=2026                 gera data/bundles/tse_raw_2026_bundle.zip"
 	@echo "  make data-unpack BUNDLE=arquivo.zip     extrai bundle para data/raw/ANO/"
-	@echo "  make run ANO=2026 [AUX=1]              prepara TODOS os dados e abre Streamlit"
+	@echo "  make data-scan DIR=C:/Downloads ANO=2026   lista ZIPs encontrados antes de processar"\n\t@echo "  make run ANO=2026 DIR=C:/Downloads     importa, valida e abre Streamlit"
 	@echo "  make validate / test / doctor / clean-processed"
 
 $(VENV_PY):
@@ -72,8 +72,13 @@ doctor: bootstrap
 # Preparacao incremental, idempotente: ZIPs por secao -> CSV.gz;
 # agregados munzona -> Parquet tipado como texto (sem perder codigos).
 # Arquivos ausentes nao sao baixados automaticamente.
+# DIR e opcional: sem DIR, procurar em data/ e data/incoming.
+# Com DIR, procurar tambem na pasta externa e importar todos os ZIPs reconhecidos.
+data-scan: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.pipeline scan --year $(ANO) $(if $(DIR),--source-dir "$(DIR)",)
+
 prepare-data: bootstrap
-	$(VENV_PY) -m mapa_eleicoes.pipeline prepare --year $(ANO) --aux $(AUX)
+	$(VENV_PY) -m mapa_eleicoes.pipeline prepare --year $(ANO) --aux $(AUX) $(if $(DIR),--source-dir "$(DIR)",)
 
 data-pack: bootstrap
 	$(VENV_PY) -m mapa_eleicoes.pipeline pack --year $(ANO)
