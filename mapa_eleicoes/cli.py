@@ -308,43 +308,122 @@ def geo_import(file: Path, level: str):
     print(f'[GEO] {len(gdf)} polígonos -> {out} (CRS EPSG:4326)')
 
 
+IBGE_UF_BY_PREFIX = {
+    "11": "RO", "12": "AC", "13": "AM", "14": "RR", "15": "PA",
+    "16": "AP", "17": "TO", "21": "MA", "22": "PI", "23": "CE",
+    "24": "RN", "25": "PB", "26": "PE", "27": "AL", "28": "SE",
+    "29": "BA", "31": "MG", "32": "ES", "33": "RJ", "35": "SP",
+    "41": "PR", "42": "SC", "43": "RS", "50": "MS", "51": "MT",
+    "52": "GO", "53": "DF",
+}
+
+
 def crosswalk_import(file: Path):
-    """Preserva codigos TSE e IBGE como strings: nunca inferir numericos."""
-    if not file.exists():
+    """Normaliza de/para oficial TSE/IBGE mantendo codigos como strings.
+
+    A UF pode nao existir como sigla no ZIP de origem; o prefixo do codigo
+    IBGE de sete digitos determina univocamente a UF, sem cruzamento por nome.
+    """
+    import unicodedata
+
+    if not file.is_file():
         raise FileNotFoundError(file)
-    if file.suffix.lower() == '.zip':
+    if file.suffix.lower() == ".zip":
         with zipfile.ZipFile(file) as archive:
             options = candidate_csv(archive)
             if not options:
-                raise ValueError('ZIP sem CSV')
+                raise ValueError("ZIP sem CSV de correspondencia")
+            # Nao presumir o primeiro membro quando houver documentacao.
             raw = archive.read(options[0])
     else:
         raw = file.read_bytes()
     try:
-        text = raw.decode('utf-8-sig')
+        decoded = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
-        text = raw.decode('latin-1')
-    df = pl.read_csv(io.BytesIO(text.encode('utf-8')), separator=';', infer_schema=False)
-    if len(df.columns) == 1:
-        raise ValueError('CSV deve usar separador ; e conter codigos TSE/IBGE')
-    df = df.rename({col: col.strip().upper() for col in df.columns})
-    cols = set(df.columns)
-    tse = first_key(cols,'CD_MUNICIPIO_TSE','COD_MUNICIPIO_TSE','CODIGO_TSE','CODIGO_MUNICIPIO_TSE','CD_MUN_TSE','CD_MUNICIPIO','COD_TSE')
-    ibge = first_key(cols,'CD_MUNICIPIO_IBGE','COD_MUNICIPIO_IBGE','CODIGO_IBGE','CODIGO_MUNICIPIO_IBGE','CD_MUN_IBGE','COD_IBGE','CD_IBGE')
-    uf = next((c for c in ('SG_UF','UF','SIGLA_UF') if c in cols), None)
-    code = pl.col(tse).str.strip_chars().str.strip_chars_start('0')
-    mapped = df.select(
-        pl.when(code == '').then(pl.lit('0')).otherwise(code).alias('cd_municipio_tse'),
-        pl.col(ibge).str.strip_chars().alias('codigo_ibge'),
-        (pl.col(uf).str.strip_chars().str.to_uppercase() if uf else pl.lit('')).alias('uf')
-    ).filter(pl.col('codigo_ibge').str.contains(r'^\d{7}$')).unique()
-    if mapped.is_empty():
-        raise ValueError('Sem linhas validas com codigo IBGE de 7 digitos')
-    target = DATA / 'reference' / 'tse_ibge.csv'
-    target.parent.mkdir(parents=True, exist_ok=True)
-    mapped.write_csv(target)
-    print(f'[TSE/IBGE] {mapped.height} codigos -> {target}')
+        decoded = raw.decode("latin-1")
+    # Evita inferencia numerica que descarta zeros a esquerda.
+    first = decoded.splitlines()[0] if decoded else ""
+    delimiter = ";" if first.count(";") >= first.count(",") else ","
+    df = pl.read_csv(
+        io.BytesIO(decoded.encode("utf-8")), separator=delimiter,
+        infer_schema=False, ignore_errors=False,
+    )
+    if len(df.columns) < 2:
+        raise ValueError("CSV de/para deve incluir codigos TSE e IBGE")
+    def normalized(name: str) -> str:
+        unaccented = unicodedata.normalize("NFKD", name.strip())
+        ascii_name = "".join(char for char in unaccented if not unicodedata.combining(char))
+        return re.sub(r"[^A-Z0-9]+", "_", ascii_name.upper()).strip("_")
 
+    rename = {column: normalized(column) for column in df.columns}
+    if len(set(rename.values())) != len(rename):
+        raise ValueError("Cabecalho de/para ambiguo apos normalizacao")
+    df = df.rename(rename)
+    cols = set(df.columns)
+    tse = first_key(
+        cols, "CD_MUNICIPIO_TSE", "COD_MUNICIPIO_TSE", "CODIGO_TSE",
+        "CODIGO_MUNICIPIO_TSE", "CD_MUN_TSE", "CD_MUNICIPIO",
+        "COD_TSE", "MUNICIPIO_TSE", "CD_MUN",
+    )
+    ibge = first_key(
+        cols, "CD_MUNICIPIO_IBGE", "COD_MUNICIPIO_IBGE", "CODIGO_IBGE",
+        "CODIGO_MUNICIPIO_IBGE", "CD_MUN_IBGE", "COD_IBGE",
+        "CD_IBGE", "IBGE", "MUNICIPIO_IBGE", "GEOCODIGO",
+    )
+    uf_col = next(
+        (column for column in ("SG_UF", "UF", "SIGLA_UF") if column in cols),
+        None,
+    )
+    clean_tse = pl.col(tse).str.strip_chars().str.strip_chars_start("0")
+    clean_ibge = pl.col(ibge).str.strip_chars()
+    mapped = df.select(
+        pl.when(clean_tse == "").then(pl.lit("0"))
+        .otherwise(clean_tse).alias("cd_municipio_tse"),
+        clean_ibge.alias("codigo_ibge"),
+        (pl.col(uf_col).str.strip_chars().str.to_uppercase()
+         if uf_col else pl.lit("")).alias("uf_original"),
+    ).filter(
+        pl.col("codigo_ibge").str.contains(r"^\\d{7}$")
+        & pl.col("cd_municipio_tse").str.contains(r"^\\d+$")
+    ).with_columns(
+        pl.col("codigo_ibge").str.slice(0, 2)
+        .replace(IBGE_UF_BY_PREFIX, default=None)
+        .alias("uf_ibge")
+    )
+    if mapped.is_empty():
+        raise ValueError("De/para sem municipio com codigo IBGE de 7 digitos")
+    mapped = mapped.filter(pl.col("uf_ibge").is_not_null())
+    if mapped.is_empty():
+        raise ValueError("Codigo IBGE nao pertence a UF brasileira reconhecida")
+    conflicts_uf = mapped.filter(
+        pl.col("uf_original").is_in(list(IBGE_UF_BY_PREFIX.values()))
+        & (pl.col("uf_original") != pl.col("uf_ibge"))
+    )
+    if not conflicts_uf.is_empty():
+        raise ValueError("UF original discorda do prefixo do codigo IBGE")
+    mapped = mapped.select(
+        pl.col("cd_municipio_tse"),
+        pl.col("codigo_ibge"),
+        pl.col("uf_ibge").alias("uf"),
+    ).unique()
+    ambiguous = (
+        mapped.group_by(["uf", "cd_municipio_tse"]).len()
+        .filter(pl.col("len") > 1)
+    )
+    if not ambiguous.is_empty():
+        raise ValueError(
+            "De/para possui codigos TSE com multiplos municipios IBGE: "
+            + str(ambiguous.head(5).to_dicts())
+        )
+    target = DATA / "reference" / "tse_ibge.csv"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".part.csv")
+    try:
+        mapped.sort(["uf", "cd_municipio_tse"]).write_csv(temporary)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    print(f"[TSE/IBGE] {mapped.height:,} municipios/codigos -> {target}")
 
 def validate(year: int):
     folder = DATA / 'processed' / str(year)
