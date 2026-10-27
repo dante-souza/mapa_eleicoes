@@ -146,3 +146,38 @@ def test_crosswalk_official_full_column_layout(storage):
     assert values.row(0, named=True) == {
         "cd_municipio_tse": "1007", "codigo_ibge": "1200138", "uf": "AC"
     }
+
+
+
+def test_geo_import_without_file_invokes_official_setup(storage, monkeypatch):
+    seen = {}
+    def fake_setup(year, **kwargs):
+        seen["year"] = year
+        seen.update(kwargs)
+        return {"ok": True}
+    monkeypatch.setattr(geography, "setup", fake_setup)
+    assert geography.import_or_setup(None, geo_year=2025) == {"ok": True}
+    assert seen["year"] == 2025
+    assert seen["simplify_meters"] == 1000
+    assert seen["force"] is False
+
+
+def test_geo_import_zones_requires_real_geometry_file(storage):
+    with pytest.raises(ValueError, match="nao sao limites de zona"):
+        geography.import_or_setup(None, level="zona")
+
+
+def test_geo_import_explicit_file_preserves_manual_behavior(storage, monkeypatch):
+    source = storage / "municipios.geojson"
+    source.write_text("{}", encoding="utf-8")
+    called = []
+    monkeypatch.setattr(cli, "geo_import", lambda path, level: called.append((path, level)))
+    assert geography.import_or_setup(source, level="municipio") == {
+        "origem": str(source), "geometria": "municipio"
+    }
+    assert called == [(source, "municipio")]
+
+
+def test_geo_import_missing_explicit_file_has_clear_error(storage):
+    with pytest.raises(FileNotFoundError, match="Arquivo geografico nao encontrado"):
+        geography.import_or_setup(storage / "nao_existe.zip")
