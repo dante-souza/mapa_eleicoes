@@ -184,6 +184,7 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
     display["nome_tooltip"] = [
         str(name_by_code.get(str(value), value)) for value in joined["map_id"]
     ]
+    display["codigo_tooltip"] = [str(value) for value in joined["map_id"]]
     display["vencedor"] = [str(value or "Sem dados") for value in joined["candidato"]]
     display["votos_vencedor"] = [int(value or 0) for value in joined["votos"]]
     display["percentual_vencedor"] = [round(float(value or 0), 2) for value in joined["pct"]]
@@ -210,11 +211,13 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
             "color": "#11111b", "weight": 0.45,
         }
 
-    fields = ["nome_tooltip", "vencedor", "votos_vencedor", "percentual_vencedor"]
-    aliases = [
-        "Município" if level == "Município" else "Zona eleitoral",
-        "Mais votado", "Votos do líder", "% dos válidos"
-    ]
+    fields = ["nome_tooltip"]
+    aliases = ["Município" if level == "Município" else "Zona eleitoral"]
+    if level == "Município":
+        fields.append("codigo_tooltip")
+        aliases.append("Código IBGE")
+    fields.extend(["vencedor", "votos_vencedor", "percentual_vencedor"])
+    aliases.extend(["Mais votado", "Votos do líder", "% dos válidos"])
     if "destaque" in attributes:
         fields.append("destaque")
         aliases.append("% do candidato")
