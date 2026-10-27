@@ -122,28 +122,42 @@ def import_directory(source: Path, year: int) -> tuple[list[str], list[dict]]:
     return good,bad
 
 
-def download_tse(year: int, uf: str) -> Path:
-    """Acervo oficial do TSE. Escreve .part e somente renomeia ZIP verificável."""
+def download_tse(year: int, uf: str, refresh: bool = False) -> Path:
+    """Download oficial atomico com opcao de verificar atualizacao do 2º turno.
+
+    NUNCA substitui ZIP valido por download parcial. Se o hash nao mudou,
+    preserva o mtime para manter o cache Polars intacto.
+    """
     from urllib.request import Request, urlopen
-    uf=uf.upper()
-    if not re.fullmatch(r'[A-Z]{2}',uf): raise ValueError('UF inválida')
-    dest=DATA/'raw'/str(year)/f'votacao_secao_{year}_{uf}.zip'
-    dest.parent.mkdir(parents=True,exist_ok=True)
-    if dest.exists():
+    uf = uf.upper()
+    if not re.fullmatch(r"[A-Z]{2}", uf):
+        raise ValueError("UF inválida")
+    dest = DATA / "raw" / str(year) / f"votacao_secao_{year}_{uf}.zip"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists() and not refresh:
         ensure_archive(dest)
-        print(f'[CACHE] {dest}');return dest
-    url=f'https://cdn.tse.jus.br/estatistica/sead/odsele/votacao_secao/votacao_secao_{year}_{uf}.zip'
-    tmp=dest.with_suffix('.zip.part')
+        print(f"[CACHE] {dest}")
+        return dest
+    url = (
+        f"https://cdn.tse.jus.br/estatistica/sead/odsele/votacao_secao/"
+        f"votacao_secao_{year}_{uf}.zip"
+    )
+    tmp = dest.with_suffix(".zip.part")
+    tmp.unlink(missing_ok=True)
     try:
-        with urlopen(Request(url, headers={'User-Agent':'AtlasEleitoral/0.2'}), timeout=120) as r, tmp.open('wb') as f:
-            shutil.copyfileobj(r,f,1024*1024)
+        with urlopen(Request(url, headers={"User-Agent": "AtlasEleitoral/0.3"}), timeout=180) as source:
+            with tmp.open("wb") as target:
+                shutil.copyfileobj(source, target, 1024 * 1024)
         ensure_archive(tmp)
+        new_hash = hash_file(tmp)
+        if dest.exists() and hash_file(dest) == new_hash:
+            print(f"[TSE SEM ALTERACAO] {dest.name}")
+            return dest
         tmp.replace(dest)
-    except Exception:
+        print(f"[TSE ATUALIZADO] {dest.name}, bytes={dest.stat().st_size:,}, sha256={new_hash}")
+        return dest
+    finally:
         tmp.unlink(missing_ok=True)
-        raise
-    print(f'[TSE] {dest} ({dest.stat().st_size:,} bytes), sha256={hash_file(dest)}')
-    return dest
 
 def first_key(columns: set[str], *choices: str) -> str:
     for value in choices:
