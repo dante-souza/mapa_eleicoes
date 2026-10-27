@@ -38,7 +38,7 @@ class DeltaZoomLayers(MacroElement):
 
     _template = Template("""
     {% macro script(this, kwargs) %}
-    (function(map, outlines, filled, states, cities, zones, data, low, high) {
+    (function(map, outlines, filled, states, cities, zones, border, data, low, high) {
         var arrowCanvas = L.DomUtil.create("canvas", "atlas-swing-arrows",
                                             map.getPanes().overlayPane);
         arrowCanvas.style.cssText = "position:absolute;pointer-events:none;z-index:430;";
@@ -145,6 +145,11 @@ class DeltaZoomLayers(MacroElement):
             syncPolygon(cities, scale !== "state", "city",
                         colored && scale === "city");
             syncPolygon(zones, scale === "zone", "zone", colored);
+            // As áreas interativas nunca devem esconder a divisa estadual.
+            // A borda não intercepta eventos do mouse.
+            border.eachLayer(function(path) {
+                if (path.bringToFront) { path.bringToFront(); }
+            });
             redraw();
         }
         map.on("overlayadd", function(event) {
@@ -162,6 +167,7 @@ class DeltaZoomLayers(MacroElement):
        {{ this.outlines.get_name() }}, {{ this.filled.get_name() }},
        {{ this.states.get_name() }}, {{ this.municipal.get_name() }},
        {% if this.zones %}{{ this.zones.get_name() }}{% else %}null{% endif %},
+       {{ this.border.get_name() }},
        {{ this.arrow_data_json }}, {{ this.low }}, {{ this.high }});
     {% endmacro %}
     """)
@@ -169,7 +175,8 @@ class DeltaZoomLayers(MacroElement):
     def __init__(
         self, outlines: folium.FeatureGroup, filled: folium.FeatureGroup,
         states: folium.GeoJson, municipal: folium.GeoJson,
-        zones: folium.GeoJson | None, arrow_data: dict,
+        zones: folium.GeoJson | None, border: folium.GeoJson,
+        arrow_data: dict,
     ) -> None:
         super().__init__()
         self._name = "DeltaZoomLayers"
@@ -178,6 +185,7 @@ class DeltaZoomLayers(MacroElement):
         self.states = states
         self.municipal = municipal
         self.zones = zones
+        self.border = border
         self.arrow_data_json = json.dumps(arrow_data, separators=(",", ":"))
         self.low = STATE_MAX_ZOOM
         self.high = ZONE_MIN_ZOOM
@@ -489,7 +497,7 @@ def delta_map(
         ).add_to(map_view)
     # Uma única camada cartográfica de divisas estaduais, sobre todas as
     # regiões eleitorais, SEM interceptar o mouse dos tooltips.
-    BoundedGeoJson(
+    state_border = BoundedGeoJson(
         _polygons(_state_border_geography(state_geo), approx_zone=False),
         bounds=bounds, control=False, interactive=False,
         style_function=lambda f: {
@@ -504,7 +512,7 @@ def delta_map(
     }
     map_view.add_child(DeltaZoomLayers(
         outline_mode, filled_mode, state_layer, municipal_layer,
-        zone_layer, arrows,
+        zone_layer, state_border, arrows,
     ))
     folium.LayerControl(position="topright", collapsed=False).add_to(map_view)
     map_view.fit_bounds(bounds)
