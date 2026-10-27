@@ -133,6 +133,7 @@ prepare-serving: bootstrap
 .NOTPARALLEL: app-ready run
 app-ready: $(if $(filter 1,$(SYNC)),refresh-data,) geo-setup prepare-data
 	$(VENV_PY) -m mapa_eleicoes.serving --year $(ANO)
+	$(VENV_PY) -m mapa_eleicoes.geography check --year $(ANO)
 
 run: app-ready
 	$(VENV_PY) -m streamlit run app.py
