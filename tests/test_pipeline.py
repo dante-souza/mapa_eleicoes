@@ -114,3 +114,53 @@ def test_corrupt_zip_stops_prepare_and_records_manifest(storage):
     )
     assert summary["erros"]
     assert "votacao_secao_2026_RR.zip" in summary["secoes"]
+
+
+def test_downloads_directory_scan_and_prepare(storage, tmp_path):
+    """make run DIR=C:/Downloads identifica ZIPs que nao estao em data/."""
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    section(downloads / "votacao_secao_2026_RR.zip")
+    aux(downloads / "votacao_candidato_munzona_2026.zip")
+    report = pipeline.scan_sources(2026, downloads)
+    assert report["entrada"] == 2
+    assert report["secoes"] == 1
+    assert report["auxiliares"] == 1
+    result = pipeline.prepare(2026, source_dir=downloads)
+    assert result["erros"] == []
+    assert len(result["secoes"]) == 1
+    assert len(result["munzona"]) == 1
+    assert (storage / "raw" / "2026" / "votacao_secao_2026_RR.zip").exists()
+    assert (storage / "raw" / "2026" / "votacao_candidato_munzona_2026.zip").exists()
+
+
+def test_downloads_missing_directory_error(storage, tmp_path):
+    with pytest.raises(NotADirectoryError, match="Pasta de origem nao existe"):
+        pipeline.scan_sources(2026, tmp_path / "Downloads")
+
+
+def test_prepare_without_any_zip_writes_manifest(storage):
+    report = pipeline.scan_sources(2026)
+    assert report["entrada"] == 0
+    assert report["raw"] == 0
+    with pytest.raises(ValueError, match="Preparacao incompleta"):
+        pipeline.prepare(2026)
+    manifest = json.loads(
+        (storage / "processed" / "2026" / "prepare_manifest.json").read_text(encoding="utf-8")
+    )
+    assert "Nenhum ZIP votacao_secao" in manifest["erros"][0]["erro"]
+
+
+def test_bad_pr_does_not_prevent_other_archives_being_staged(storage, tmp_path):
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    section(downloads / "votacao_secao_2026_RR.zip")
+    (downloads / "votacao_secao_2026_PR.zip").write_bytes(b"broken")
+    with pytest.raises(ValueError, match="Preparacao incompleta"):
+        pipeline.prepare(2026, source_dir=downloads)
+    assert (storage / "raw" / "2026" / "votacao_secao_2026_RR.zip").exists()
+    manifest = json.loads(
+        (storage / "processed" / "2026" / "prepare_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["secoes"] == ["votacao_secao_2026_RR.zip"]
+    assert any("PR.zip" in error.get("arquivo", "") for error in manifest["erros"])
