@@ -148,10 +148,11 @@ class CityFocus(MacroElement):
                 var id = idOf(featureLayer);
                 if (!id) { return; }
                 if (focus === null) { before = map.getBounds(); }
-                setFocus(id);
-                // O primeiro moveend é provocado pelo próprio enquadramento.
+                // Enquadrar ANTES de aplicar milhares de estilos municipais:
+                // a câmera responde imediatamente mesmo no mapa nacional.
                 afterClick = true;
                 map.fitBounds(featureLayer.getBounds(), {padding: [24, 24]});
+                setFocus(id);
             }
             layer.eachLayer(function (featureLayer) {
                 if (idOf(featureLayer)) {
