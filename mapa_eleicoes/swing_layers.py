@@ -44,20 +44,16 @@ class DeltaZoomLayers(MacroElement):
         arrowCanvas.style.cssText = "position:absolute;pointer-events:none;z-index:430;";
         var ratio = Math.min(window.devicePixelRatio || 1, 2);
 
-        function transparent(layer, level) {
-            return {
-                fillOpacity: 0,
-                color: level === "state" ? "#e0e0e8" : "#a6a6b5",
-                weight: level === "state" ? 1.5 : 0.8
-            };
+        // Polígonos invisíveis continuam recebendo hover e tooltips,
+        // mas NENHUMA divisa municipal ou zonal é desenhada.
+        function transparent(feature, level) {
+            return {stroke: false, weight: 0, opacity: 0,
+                    fill: true, fillOpacity: 0.001};
         }
         function painted(feature, level) {
-            return {
-                fillColor: feature.properties.cor,
-                fillOpacity: feature.properties.com_dados ? 0.72 : 0,
-                color: level === "state" ? "#d8d8df" : "#181820",
-                weight: level === "state" ? 1.5 : 0.55
-            };
+            return {stroke: false, weight: 0, opacity: 0, fill: true,
+                    fillColor: feature.properties.cor,
+                    fillOpacity: feature.properties.com_dados ? 0.72 : 0.001};
         }
         function syncPolygon(layer, visible, level, colored) {
             if (!layer) { return; }
@@ -98,11 +94,7 @@ class DeltaZoomLayers(MacroElement):
             }
             ctx.lineCap = "round";
             ctx.lineJoin = "round";
-            // Halo escuro para contraste tanto sobre a base quanto sobre o
-            // preenchimento, sem alterar o vermelho/azul do Atlas.
-            ctx.strokeStyle = "#f8f8f2";
-            ctx.lineWidth = lineWidth + 3.7;
-            shape();
+            // Uma única linha na cor original, sem halo ou contorno branco.
             ctx.strokeStyle = delta > 0 ? "#d60828" : "#272d97";
             ctx.lineWidth = lineWidth;
             shape();
@@ -406,6 +398,29 @@ def _state_geography(
     return gpd.GeoDataFrame(features, geometry="geometry", crs=municipal.crs)
 
 
+def _state_border_geography(state_geo: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Mantém apenas perímetros estaduais externos, sem anéis interiores.
+
+    Geometrias municipais simplificadas podem deixar frestas no dissolve.
+    Esses anéis internos são artefatos, não fronteiras entre UFs.
+    """
+    from shapely.geometry import MultiPolygon, Polygon
+
+    def exteriors(geometry):
+        parts = [
+            part for part in shapely.get_parts(geometry)
+            if part.geom_type == "Polygon" and not part.is_empty
+        ]
+        if not parts:
+            return geometry
+        outer = [Polygon(part.exterior) for part in parts]
+        return outer[0] if len(outer) == 1 else MultiPolygon(outer)
+
+    frame = state_geo.copy()
+    frame["geometry"] = [exteriors(g) for g in state_geo.geometry]
+    return frame
+
+
 def _canvas_data(geo: gpd.GeoDataFrame | None) -> list[list]:
     """[latitude, longitude, delta], sem criar milhares de markers DOM."""
     if geo is None or geo.empty:
@@ -450,7 +465,7 @@ def delta_map(
         _polygons(state_geo, approx_zone=False), bounds=bounds,
         control=False, show=False,
         style_function=lambda f: {
-            "fillOpacity": 0, "color": "#e0e0e8", "weight": 1.5,
+            "stroke": False, "weight": 0, "fillOpacity": 0.001,
         },
         tooltip=_polygon_tooltip(),
     ).add_to(map_view)
@@ -458,7 +473,7 @@ def delta_map(
         _polygons(municipal, approx_zone=False), bounds=bounds,
         control=False, show=False,
         style_function=lambda f: {
-            "fillOpacity": 0, "color": BORDER, "weight": .8,
+            "stroke": False, "weight": 0, "fillOpacity": 0.001,
         },
         tooltip=_polygon_tooltip(),
     ).add_to(map_view)
@@ -468,10 +483,20 @@ def delta_map(
             _polygons(zones, approx_zone=True), bounds=leaflet_bounds(zones),
             control=False, show=False,
             style_function=lambda f: {
-                "fillOpacity": 0, "color": BORDER, "weight": .8,
+                "stroke": False, "weight": 0, "fillOpacity": 0.001,
             },
             tooltip=_polygon_tooltip(),
         ).add_to(map_view)
+    # Uma única camada cartográfica de divisas estaduais, sobre todas as
+    # regiões eleitorais, SEM interceptar o mouse dos tooltips.
+    BoundedGeoJson(
+        _polygons(_state_border_geography(state_geo), approx_zone=False),
+        bounds=bounds, control=False, interactive=False,
+        style_function=lambda f: {
+            "fill": False, "stroke": True,
+            "color": "#969aab", "weight": 1.35, "opacity": 0.88,
+        },
+    ).add_to(map_view)
     arrows = {
         "state": _canvas_data(state_geo),
         "city": _canvas_data(municipal),
