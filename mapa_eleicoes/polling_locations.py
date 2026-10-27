@@ -78,6 +78,19 @@ def ingest_location_zip(source: Path, dest: Path, chunksize: int = 50_000) -> di
         shutil.rmtree(shards)
     shards.mkdir(parents=True)
     rows, valid, parts = 0, 0, 0
+
+    def write_location_batch(items: list[dict], part_id: int) -> None:
+        # Mesmos dtypes dos resultados por secao: Polars nao deve fazer
+        # coercao implicita em chaves de join, sobretudo Int16/Int32.
+        typed = pl.DataFrame(items).with_columns(
+            pl.col("turno").cast(pl.Int16, strict=True),
+            pl.col("zona").cast(pl.Int32, strict=True),
+            pl.col("secao").cast(pl.Int32, strict=True),
+        )
+        typed.unique(subset=list(JOIN)).write_parquet(
+            shards / f"p_{part_id:07d}.parquet"
+        )
+
     try:
         with zipfile.ZipFile(source) as archive:
             for entry in cli.candidate_csv(archive):
@@ -99,15 +112,11 @@ def ingest_location_zip(source: Path, dest: Path, chunksize: int = 50_000) -> di
                             batch.append(item)
                             valid += 1
                         if len(batch) >= chunksize:
-                            pl.DataFrame(batch).unique(subset=list(JOIN)).write_parquet(
-                                shards / f"p_{parts:07d}.parquet"
-                            )
+                            write_location_batch(batch, parts)
                             parts += 1
                             batch.clear()
                     if batch:
-                        pl.DataFrame(batch).unique(subset=list(JOIN)).write_parquet(
-                            shards / f"p_{parts:07d}.parquet"
-                        )
+                        write_location_batch(batch, parts)
                         parts += 1
         if parts == 0:
             raise ValueError("Arquivo local de votacao sem coordenadas validas")
