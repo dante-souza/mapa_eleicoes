@@ -16,6 +16,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from mapa_eleicoes.geo_bridge import add_properties, ibge_code, zone_code
+from mapa_eleicoes.map_tiles import atlas_map
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -169,7 +170,20 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         attributes["destaque"] = 0.0
     joined = add_properties(geometry, winners, attributes)
     display = joined[["map_id", "geometry"]].copy()
-    display["nome_tooltip"] = [str(value) for value in joined["map_id"]]
+    # Nomes oficiais do CSV TSE sao apenas exibidos como rotulos.
+    # O cruzamento cartografico continua EXCLUSIVAMENTE por geocodigos.
+    names = (
+        data.select(["map_id", "municipio"])
+        .filter(pl.col("municipio").is_not_null() & (pl.col("municipio") != ""))
+        .unique(subset=["map_id"], keep="first")
+    )
+    name_by_code = {
+        str(item["map_id"]): item["municipio"]
+        for item in names.iter_rows(named=True)
+    } if level == "Município" else {}
+    display["nome_tooltip"] = [
+        str(name_by_code.get(str(value), value)) for value in joined["map_id"]
+    ]
     display["vencedor"] = [str(value or "Sem dados") for value in joined["candidato"]]
     display["votos_vencedor"] = [int(value or 0) for value in joined["votos"]]
     display["percentual_vencedor"] = [round(float(value or 0), 2) for value in joined["pct"]]
@@ -184,9 +198,7 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
     ]))
     centroid = geometry.geometry.union_all().representative_point()
     bounds = geometry.total_bounds
-    map_view = folium.Map(location=[float(centroid.y), float(centroid.x)],
-                          zoom_start=5, tiles="CartoDB dark_matter",
-                          control_scale=True, prefer_canvas=True)
+    map_view = atlas_map([float(centroid.y), float(centroid.x)])
 
     def style(feature):
         key = feature["properties"]["map_id"]
@@ -199,7 +211,10 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         }
 
     fields = ["nome_tooltip", "vencedor", "votos_vencedor", "percentual_vencedor"]
-    aliases = ["Código geográfico", "Mais votado", "Votos do líder", "% dos válidos"]
+    aliases = [
+        "Município" if level == "Município" else "Zona eleitoral",
+        "Mais votado", "Votos do líder", "% dos válidos"
+    ]
     if "destaque" in attributes:
         fields.append("destaque")
         aliases.append("% do candidato")
@@ -304,6 +319,6 @@ table = (
     .agg(pl.col("votos").sum())
     .sort("votos", descending=True)
 )
-st.dataframe(table, use_container_width=True, hide_index=True)
+st.dataframe(table, width="stretch", hide_index=True)
 st.download_button("Exportar seleção CSV", table.write_csv().encode("utf-8-sig"),
                    file_name=f"atlas_{year}_turno{turno}.csv", mime="text/csv")
