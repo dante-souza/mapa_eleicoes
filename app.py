@@ -5,7 +5,6 @@ Nao converter Arrow/Polars para pandas nem fazer GeoDataFrame.merge com Polars.
 """
 from __future__ import annotations
 
-import gzip
 import json
 from pathlib import Path
 
@@ -36,23 +35,19 @@ st.markdown("""<style>
 
 @st.cache_data(show_spinner=False)
 def load_votes(year: int) -> pl.DataFrame:
-    files = sorted((DATA / "processed" / str(year)).glob("votos_*.csv.gz"))
+    """Consome exclusivamente dados finais Parquet gerados antes da interface."""
+    folder = DATA / "serving" / str(year)
+    files = sorted(folder.glob("votos_*.parquet"))
     if not files:
         return pl.DataFrame()
-    parts = []
-    for path in files:
-        # CSV derivado: tipos fixos. Identificadores nunca inferidos como inteiros.
-        with gzip.open(path, "rb") as stream:
-            frame = pl.read_csv(stream, infer_schema=False)
-        frame = frame.with_columns(
-            pl.col("ano").cast(pl.Int32, strict=True),
-            pl.col("turno").cast(pl.Int16, strict=True),
-            pl.col("zona").cast(pl.Int32, strict=True),
-            pl.col("votos").cast(pl.Int64, strict=True),
-            *[pl.col(name).fill_null("").cast(pl.String) for name in TEXT_COLUMNS],
-        )
-        parts.append(frame)
-    return pl.concat(parts, how="vertical")
+    return pl.concat([pl.read_parquet(path) for path in files], how="vertical")
+
+
+@st.cache_data(show_spinner=False)
+def load_catalog(year: int) -> dict:
+    """O catalogo explica quais fontes e turnos estao materializados."""
+    path = DATA / "serving" / str(year) / "catalog.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
 @st.cache_data(show_spinner=False)
@@ -243,17 +238,18 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
 
 st.title("🗳️ Atlas Eleitoral")
 st.caption("Dados públicos do Tribunal Superior Eleitoral · Estudo independente · Sem vínculo com TSE ou G1")
-years = sorted((int(path.name) for path in (DATA / "processed").glob("20[0-9][0-9]")
-                if path.is_dir()), reverse=True)
+years = sorted((int(path.name) for path in (DATA / "serving").glob("20[0-9][0-9]")
+                if path.is_dir() and (path / "catalog.json").exists()), reverse=True)
 if not years:
-    st.warning("Sem dados processados. Use make import e make ingest.")
+    st.error("Os resultados eleitorais ainda nao estao disponiveis neste Atlas.")
     st.stop()
 
 with st.sidebar:
     year = st.selectbox("Eleição", years)
     votes = load_votes(year)
+    catalog = load_catalog(year)
     if votes.is_empty():
-        st.warning("Ano sem arquivos CSV agregados.")
+        st.info("Ainda nao ha resultados eleitorais carregados para este ano.")
         st.stop()
     uf_opts = sorted(votes.get_column("uf").drop_nulls().unique().to_list())
     uf = st.selectbox("UF", ["Todas"] + uf_opts)
@@ -263,15 +259,31 @@ with st.sidebar:
     # candidatos do segundo turno e nao podem desaparecer do seletor.
     cargos = available_offices(votes)
     if not cargos:
-        st.warning("Nao foram encontrados cargos para esta UF. Use make offices ANO=2026.")
+        st.info("Nao ha resultados para esta unidade federativa no conjunto carregado.")
         st.stop()
     cargo = st.selectbox("Cargo", cargos, index=preferred_office(cargos))
     votes = votes.filter(pl.col("cargo") == cargo)
     turnos = available_turns(votes, cargo)
     if not turnos:
-        st.warning("Cargo selecionado sem turnos. Confira make offices ANO=2026.")
+        st.info("Nao ha turnos disponiveis para o cargo selecionado.")
         st.stop()
-    turno = st.selectbox("Turno", turnos)
+    # Os dois turnos ficam visiveis sempre. Um turno sem registros e
+    # identificado explicitamente como ausente, nunca preenchido artificialmente.
+    turno = st.selectbox(
+        "Turno", [1, 2],
+        index=0,
+        format_func=lambda value: (
+            f"{value}º turno" if value in turnos
+            else f"{value}º turno (sem dados)"
+        ),
+        key=f"turno_{year}_{uf}_{cargo}",
+    )
+    if turno not in turnos:
+        st.info(
+            f"Os resultados do {turno}º turno para {cargo} ainda "
+            "nao estao presentes nos dados eleitorais carregados."
+        )
+        st.stop()
     votes = votes.filter(pl.col("turno") == turno)
     if len(cargos) == 1:
         st.caption(
@@ -286,10 +298,17 @@ with st.sidebar:
     zone = st.selectbox("Zona", ["Todas"] + zones)
     if zone != "Todas":
         votes = votes.filter(pl.col("zona") == zone)
-    level = st.radio("Geometria", ["Município", "Zona eleitoral"],
-                     help="Zona exige polígonos reais.")
+    # Sem poligonos cartograficos reais de zonas, a interface sempre
+    # usa municipios. A selecao de zona continua filtrando votos, mas
+    # nunca apresenta um municipio como poligono eleitoral de zona.
+    zone_shape_available = (DATA / "geo" / "zonas.geojson").is_file()
+    if zone_shape_available:
+        level = st.radio("Geometria", ["Município", "Zona eleitoral"])
+    else:
+        level = "Município"
+        st.caption("Mapa municipal. A votacao por zona aparece nos filtros e na tabela.")
     if level == "Município" and zone != "Todas":
-        st.warning("O limite exibido e municipal, nao da zona selecionada.")
+        st.caption("Os votos refletem a zona escolhida; o contorno e do municipio.")
     mode = st.radio("Visualização", ["Vencedor por região", "Votação de candidato"])
     st.caption(
         f"Legenda: 🔴 PT (13) · 🔵 PL (22) "
@@ -325,13 +344,16 @@ left, right = st.columns([3, 1], gap="large")
 with left:
     polygons = load_shape(level)
     if polygons is None:
-        st.warning(f"Sem malha geográfica de {level.lower()}. Importe usando make geo-import.")
+        st.info("A camada territorial desta visualizacao nao esta disponivel no conjunto de dados.")
     else:
         try:
             boundaries, scoped = shape_for_votes(polygons, votes, level)
             matched = scoped.filter(pl.col("map_id").is_not_null() & (pl.col("map_id") != ""))
             if matched.height < scoped.height:
-                st.info(f"{scoped.height - matched.height} linhas sem correspondência geográfica.")
+                st.caption(
+                    f"{scoped.height - matched.height:,} registros nao puderam "
+                    "ser associados ao mapa territorial."
+                )
             draw_map(boundaries, matched, mode, candidate, level)
         except (ValueError, KeyError, pl.exceptions.PolarsError) as exc:
             st.error(f"Mapa indisponível: {exc}")
@@ -343,7 +365,10 @@ with right:
         pct = 100 * record["votos"] / total if total else 0
         st.markdown(f'**{record["candidato"]}** — {record["votos"]:,} votos · {pct:.2f}%')
         st.progress(min(1.0, pct / 100))
-    st.caption(f"{len(uf_opts)} UFs no conjunto processado; cobertura pode ser parcial.")
+    st.caption(
+        f"{len(uf_opts)} UFs no conjunto consultado. "
+        "A disponibilidade depende dos arquivos oficiais incorporados."
+    )
 
 st.subheader("Detalhamento por zona eleitoral")
 table = (
