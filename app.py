@@ -268,6 +268,7 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         municipio=municipality, zona=zone, mode=mode,
         candidate_number=selected_number, detail=detail,
         section_ready=section_ready and level == "Município",
+        zone_votes=data if level == "Município" else None,
     )
 
 
