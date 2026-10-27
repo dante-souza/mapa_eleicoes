@@ -11,6 +11,9 @@ MALHA ?=
 CROSSWALK ?=
 SIMPLIFY_METERS ?= 1000
 FORCE ?= 0
+SYNC ?= 1
+ALL ?= 0
+UFS ?= BR,PR
 BUNDLE ?= data/bundles/tse_raw_$(ANO)_bundle.zip
 ifeq ($(OS),Windows_NT)
 PYTHON ?= py -3
@@ -19,7 +22,7 @@ else
 PYTHON ?= python3
 VENV_PY := .venv/bin/python
 endif
-.PHONY: help bootstrap inspect import import-dir download ingest validate geo-import crosswalk run test doctor clean-processed prepare-data data-pack data-unpack data-scan geo-setup geo-check preview offices
+.PHONY: help bootstrap inspect import import-dir download ingest validate geo-import crosswalk run test doctor clean-processed prepare-data data-pack data-unpack data-scan geo-setup geo-check preview offices refresh-data prepare-serving app-ready
 help:
 	@echo "Atlas Eleitoral / Make como ponto de entrada"
 	@echo "  make bootstrap                           instala uv + requirements"
@@ -36,6 +39,10 @@ help:
 	@echo "  make geo-setup MALHA=... CROSSWALK=...  importar malha e de/para locais"
 	@echo "  make geo-check ANO=2026                 conferir cobertura geocodigo TSE/IBGE"
 	@echo "  make offices ANO=2026                   listar cargos/turnos e checar BR"
+	@echo "  make refresh-data ANO=2026               concilia BR/PR com dados TSE oficiais"
+	@echo "  make refresh-data ANO=2026 ALL=1         verifica atualizacoes das 28 fontes"
+	@echo "  make prepare-serving ANO=2026            materializa Parquet pronto para mapa"
+	@echo "  make app-ready ANO=2026                  prepara fontes, geometria e dados para mapa"
 	@echo "  make preview                            abrir mapa com dados ja processados (parciais)"
 	@echo "  make prepare-data ANO=2026 DIR=C:/Downloads   le ZIPs de DIR e processa"
 	@echo "  make data-pack ANO=2026                 gera data/bundles/tse_raw_2026_bundle.zip"
@@ -85,6 +92,11 @@ geo-setup: bootstrap
 geo-check: bootstrap
 	$(VENV_PY) -m mapa_eleicoes.geography check --year $(ANO)
 
+# Conferencia de fontes oficiais prioritarias (BR e PR); as demais podem
+# ser verificadas por ALL=1. Nunca inventar segundo turno faltante.
+refresh-data: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.tse_sync --year $(ANO) --ufs "$(UFS)" $(if $(filter 1,$(ALL)),--all,) $(if $(filter 1,$(FORCE)),--force,)
+
 # Relatorio fiel aos CSV.gz locais: lista cargos/turnos/UF e situacao BR.
 offices: bootstrap
 	$(VENV_PY) -m mapa_eleicoes.office_catalog --year $(ANO)
@@ -112,12 +124,21 @@ data-pack: bootstrap
 data-unpack: bootstrap
 	$(VENV_PY) -m mapa_eleicoes.pipeline unpack --year $(ANO) --bundle "$(BUNDLE)"
 
-run: prepare-data
+# Prepara Parquets estaveis, consumidos diretamente pelo Streamlit.
+prepare-serving: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.serving --year $(ANO)
+
+# make run instala geografia/BR/PR, processa ZIPs e so abre a interface
+# depois de materializar o catalogo. Sem dicas de Make na interface.
+.NOTPARALLEL: app-ready run
+app-ready: $(if $(filter 1,$(SYNC)),refresh-data,) geo-setup prepare-data
+	$(VENV_PY) -m mapa_eleicoes.serving --year $(ANO)
+
+run: app-ready
 	$(VENV_PY) -m streamlit run app.py
 
-# Preview explicito para explorar processamento parcial (ex.: PR corrompido).
-# Nao altera/manipula dados nem afirma cobertura completa.
-preview: bootstrap
+# Preview deixa visualizar um conjunto local parcial sem reexecutar ZIPs.
+preview: prepare-serving
 	$(VENV_PY) -m streamlit run app.py
 
 test: bootstrap
