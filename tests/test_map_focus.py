@@ -19,6 +19,10 @@ def test_focus_wraps_layer_style_and_reacts_to_click_and_zoom():
     # Estilo da propria camada: o resetStyle do hover preserva o apagado.
     assert "layer.options.style = styleFor" in html
     assert 'featureLayer.on("click"' in html and "fitBounds" in html
+    # Também aceita cliques do mapa quando o renderer Canvas não envia o
+    # evento para a feição (e.sourceTarget sem dados do polígono).
+    assert 'map.on("click", function (e)' in html
+    assert "cityAt(e.latlng)" in html
     assert 'layer.on("click"' not in html
     assert 'map.on("moveend"' in html
     assert DIM_STYLE["fillColor"] in html
