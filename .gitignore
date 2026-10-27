@@ -237,3 +237,6 @@ data/incoming/
 data/bundles/
 data/*.zip
 data/*.part
+
+# Dataset final de consumo do mapa: Parquets e catalogos locais nunca no Git
+data/serving/

@@ -5,7 +5,6 @@ Nao converter Arrow/Polars para pandas nem fazer GeoDataFrame.merge com Polars.
 """
 from __future__ import annotations
 
-import gzip
 import json
 from pathlib import Path
 
@@ -13,14 +12,16 @@ import folium
 import geopandas as gpd
 import polars as pl
 import streamlit as st
-from streamlit_folium import st_folium
 
 from mapa_eleicoes.geo_bridge import add_properties, ibge_code, zone_code
+from mapa_eleicoes.map_tiles import atlas_map
+from mapa_eleicoes.office_catalog import available_offices, available_turns, preferred_office
+from mapa_eleicoes.dashboard_options import round_label, geometry_options
+from mapa_eleicoes.vote_gradients import percentage_shade, legend_html
+from mapa_eleicoes.interactive_map import render_explorer
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
-COLORS = ["#ff5555", "#6272a4", "#bd93f9", "#50fa7b",
-          "#ffb86c", "#8be9fd", "#f1fa8c", "#ff79c6"]
 TEXT_COLUMNS = ["uf", "cd_municipio_tse", "municipio", "numero",
                 "candidato", "cargo", "tipo_voto"]
 
@@ -35,23 +36,19 @@ st.markdown("""<style>
 
 @st.cache_data(show_spinner=False)
 def load_votes(year: int) -> pl.DataFrame:
-    files = sorted((DATA / "processed" / str(year)).glob("votos_*.csv.gz"))
+    """Consome exclusivamente dados finais Parquet gerados antes da interface."""
+    folder = DATA / "serving" / str(year)
+    files = sorted(folder.glob("votos_*.parquet"))
     if not files:
         return pl.DataFrame()
-    parts = []
-    for path in files:
-        # CSV derivado: tipos fixos. Identificadores nunca inferidos como inteiros.
-        with gzip.open(path, "rb") as stream:
-            frame = pl.read_csv(stream, infer_schema=False)
-        frame = frame.with_columns(
-            pl.col("ano").cast(pl.Int32, strict=True),
-            pl.col("turno").cast(pl.Int16, strict=True),
-            pl.col("zona").cast(pl.Int32, strict=True),
-            pl.col("votos").cast(pl.Int64, strict=True),
-            *[pl.col(name).fill_null("").cast(pl.String) for name in TEXT_COLUMNS],
-        )
-        parts.append(frame)
-    return pl.concat(parts, how="vertical")
+    return pl.concat([pl.read_parquet(path) for path in files], how="vertical")
+
+
+@st.cache_data(show_spinner=False)
+def load_catalog(year: int) -> dict:
+    """O catalogo explica quais fontes e turnos estao materializados."""
+    path = DATA / "serving" / str(year) / "catalog.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
 @st.cache_data(show_spinner=False)
@@ -94,7 +91,7 @@ def shape_for_votes(geometry: gpd.GeoDataFrame, votes: pl.DataFrame, level: str)
     else:
         correspondence = crosswalk()
         if correspondence is None:
-            raise ValueError("Falta data/reference/tse_ibge.csv (make crosswalk).")
+            raise ValueError("A correspondencia territorial TSE/IBGE nao esta disponivel.")
         keys = ["uf", "cd_municipio_tse", "codigo_ibge"]
         missing = set(keys) - set(correspondence.columns)
         if missing:
@@ -129,21 +126,34 @@ def winner_table(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
-             selected: str | None, level: str):
+             selected: str | None, level: str, *,
+             year: int, uf: str, cargo: str, turno: int,
+             municipality: str, zone: int | str,
+             detail: str, section_ready: bool):
     winners = winner_table(data)
     if winners.is_empty():
         st.info("Sem votos nominais para gerar mapa.")
         return
-    totals = (
-        data.filter(pl.col("tipo_voto") == "nominal")
-        .group_by("candidato").agg(pl.col("votos").sum())
-        .sort("votos", descending=True)
-    )
-    colors = {candidate: COLORS[i % len(COLORS)]
-              for i, candidate in enumerate(totals.get_column("candidato").to_list())}
+    # Cor do partido extraida de NR_VOTAVEL. Nunca depende do ranking
+    # momentaneo de votos, do nome ou da ordem retornada pelo Polars.
+    selected_number = None
     if mode == "Votação de candidato" and selected:
+        numbers = (
+            data.filter(
+                (pl.col("tipo_voto") == "nominal")
+                & (pl.col("candidato") == selected)
+            )
+            .group_by("numero").agg(pl.col("votos").sum())
+            .sort(["votos", "numero"], descending=[True, False])
+        )
+        if not numbers.is_empty():
+            selected_number = numbers.get_column("numero")[0]
         candidate_votes = (
-            data.filter((pl.col("tipo_voto") == "nominal") & (pl.col("candidato") == selected))
+            data.filter(
+                (pl.col("tipo_voto") == "nominal")
+                & (pl.col("candidato") == selected)
+                & (pl.col("numero") == selected_number)
+            )
             .group_by("map_id").agg(pl.col("votos").sum().alias("votos_candidato"))
         )
         winners = winners.join(candidate_votes, on="map_id", how="left").with_columns(
@@ -169,7 +179,21 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         attributes["destaque"] = 0.0
     joined = add_properties(geometry, winners, attributes)
     display = joined[["map_id", "geometry"]].copy()
-    display["nome_tooltip"] = [str(value) for value in joined["map_id"]]
+    # Nomes oficiais do CSV TSE sao apenas exibidos como rotulos.
+    # O cruzamento cartografico continua EXCLUSIVAMENTE por geocodigos.
+    names = (
+        data.select(["map_id", "municipio"])
+        .filter(pl.col("municipio").is_not_null() & (pl.col("municipio") != ""))
+        .unique(subset=["map_id"], keep="first")
+    )
+    name_by_code = {
+        str(item["map_id"]): item["municipio"]
+        for item in names.iter_rows(named=True)
+    } if level == "Município" else {}
+    display["nome_tooltip"] = [
+        str(name_by_code.get(str(value), value)) for value in joined["map_id"]
+    ]
+    display["codigo_tooltip"] = [str(value) for value in joined["map_id"]]
     display["vencedor"] = [str(value or "Sem dados") for value in joined["candidato"]]
     display["votos_vencedor"] = [int(value or 0) for value in joined["votos"]]
     display["percentual_vencedor"] = [round(float(value or 0), 2) for value in joined["pct"]]
@@ -177,29 +201,35 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         display["destaque"] = [round(float(value or 0), 2) for value in joined["destaque"]]
     geojson = json.loads(display.to_json(drop_id=True))
     color_by_key = dict(zip(joined["map_id"], [
-        colors.get(name, "#44475a") for name in joined["candidato"]
+        percentage_shade(number, pct)
+        for number, pct in zip(joined["numero"], joined["pct"])
     ]))
     highlight = dict(zip(joined["map_id"], [
         float(value or 0) for value in joined.get("destaque", [0] * len(joined))
     ]))
     centroid = geometry.geometry.union_all().representative_point()
     bounds = geometry.total_bounds
-    map_view = folium.Map(location=[float(centroid.y), float(centroid.x)],
-                          zoom_start=5, tiles="CartoDB dark_matter",
-                          control_scale=True, prefer_canvas=True)
+    map_view = atlas_map([float(centroid.y), float(centroid.x)])
 
     def style(feature):
         key = feature["properties"]["map_id"]
         intensity = min(1.0, max(0.05, highlight.get(key, 0) / 100.0))
         return {
-            "fillColor": colors.get(selected, "#ff5555") if mode == "Votação de candidato"
+            "fillColor": percentage_shade(
+                selected_number, highlight.get(key, 0.0)
+            ) if mode == "Votação de candidato"
                          else color_by_key.get(key, "#44475a"),
-            "fillOpacity": 0.15 + 0.8 * intensity if mode == "Votação de candidato" else 0.78,
+            "fillOpacity": 0.86,
             "color": "#11111b", "weight": 0.45,
         }
 
-    fields = ["nome_tooltip", "vencedor", "votos_vencedor", "percentual_vencedor"]
-    aliases = ["Código geográfico", "Mais votado", "Votos do líder", "% dos válidos"]
+    fields = ["nome_tooltip"]
+    aliases = ["Município" if level == "Município" else "Zona eleitoral"]
+    if level == "Município":
+        fields.append("codigo_tooltip")
+        aliases.append("Código IBGE")
+    fields.extend(["vencedor", "votos_vencedor", "percentual_vencedor"])
+    aliases.extend(["Mais votado", "Votos do líder", "% dos válidos"])
     if "destaque" in attributes:
         fields.append("destaque")
         aliases.append("% do candidato")
@@ -209,33 +239,70 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         tooltip=folium.GeoJsonTooltip(fields=fields, aliases=aliases, sticky=False),
     ).add_to(map_view)
     map_view.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
-    st_folium(map_view, height=700, returned_objects=[], use_container_width=True)
-    st.caption(f"{len(display)} polígonos exibidos · Geometria: {level} · Sem inferir zonas")
+    map_view.get_root().html.add_child(
+        folium.Element(legend_html("percentual"))
+    )
+    render_explorer(
+        map_view, geometry, crosswalk() if level == "Município" else None,
+        root=DATA, year=year, uf=uf, cargo=cargo, turno=turno,
+        municipio=municipality, zona=zone, mode=mode,
+        candidate_number=selected_number, detail=detail,
+        section_ready=section_ready and level == "Município",
+    )
+
 
 
 st.title("🗳️ Atlas Eleitoral")
 st.caption("Dados públicos do Tribunal Superior Eleitoral · Estudo independente · Sem vínculo com TSE ou G1")
-years = sorted((int(path.name) for path in (DATA / "processed").glob("20[0-9][0-9]")
-                if path.is_dir()), reverse=True)
+years = sorted((int(path.name) for path in (DATA / "serving").glob("20[0-9][0-9]")
+                if path.is_dir() and (path / "catalog.json").exists()), reverse=True)
 if not years:
-    st.warning("Sem dados processados. Use make import e make ingest.")
+    st.error("Os resultados eleitorais ainda nao estao disponiveis neste Atlas.")
     st.stop()
 
 with st.sidebar:
     year = st.selectbox("Eleição", years)
     votes = load_votes(year)
+    catalog = load_catalog(year)
     if votes.is_empty():
-        st.warning("Ano sem arquivos CSV agregados.")
+        st.info("Ainda nao ha resultados eleitorais carregados para este ano.")
         st.stop()
     uf_opts = sorted(votes.get_column("uf").drop_nulls().unique().to_list())
     uf = st.selectbox("UF", ["Todas"] + uf_opts)
     if uf != "Todas":
         votes = votes.filter(pl.col("uf") == uf)
-    turnos = sorted(votes.get_column("turno").unique().to_list())
-    turno = st.selectbox("Turno", turnos)
-    votes = votes.filter(pl.col("turno") == turno)
-    cargo = st.selectbox("Cargo", sorted(votes.get_column("cargo").unique().to_list()))
+    # O cargo deve vir ANTES do turno: deputados e senadores nao sao
+    # candidatos do segundo turno e nao podem desaparecer do seletor.
+    cargos = available_offices(votes)
+    if not cargos:
+        st.info("Nao ha resultados para esta unidade federativa no conjunto carregado.")
+        st.stop()
+    cargo = st.selectbox("Cargo", cargos, index=preferred_office(cargos))
     votes = votes.filter(pl.col("cargo") == cargo)
+    turnos = available_turns(votes, cargo)
+    if not turnos:
+        st.info("Nao ha turnos disponiveis para o cargo selecionado.")
+        st.stop()
+    # Os dois turnos ficam visiveis sempre. Um turno sem registros e
+    # identificado explicitamente como ausente, nunca preenchido artificialmente.
+    turno = st.selectbox(
+        "Turno", [1, 2],
+        index=0,
+        format_func=lambda value: round_label(value, turnos),
+        key=f"turno_{year}_{uf}_{cargo}",
+    )
+    if turno not in turnos:
+        st.info(
+            f"Os resultados do {turno}º turno para {cargo} ainda "
+            "nao estao presentes nos dados eleitorais carregados."
+        )
+        st.stop()
+    votes = votes.filter(pl.col("turno") == turno)
+    if len(cargos) == 1:
+        st.caption(
+            f"Para a UF selecionada, apenas {cargos[0]} esta disponivel "
+            "no conjunto carregado."
+        )
     municipality = st.selectbox("Município",
                                 ["Todos"] + sorted(votes.get_column("municipio").unique().to_list()))
     if municipality != "Todos":
@@ -244,11 +311,36 @@ with st.sidebar:
     zone = st.selectbox("Zona", ["Todas"] + zones)
     if zone != "Todas":
         votes = votes.filter(pl.col("zona") == zone)
-    level = st.radio("Geometria", ["Município", "Zona eleitoral"],
-                     help="Zona exige polígonos reais.")
-    if level == "Município" and zone != "Todas":
-        st.warning("O limite exibido e municipal, nao da zona selecionada.")
+    # Sem poligonos cartograficos reais de zonas, a interface sempre
+    # usa municipios. A selecao de zona continua filtrando votos, mas
+    # nunca apresenta um municipio como poligono eleitoral de zona.
+    zone_shape_available = (DATA / "geo" / "zonas.geojson").is_file()
+    section_ready = (
+        (DATA / "serving" / str(year) / "secoes" / "catalog.json").exists()
+        and (DATA / "serving" / str(year) / "locais.parquet").exists()
+    )
+    # O modo automático sempre começa no mapa nacional/estadual; os
+    # pontos das seções aparecem conforme a aproximação pelo mouse.
+    levels = ["Automático"] + geometry_options(zone_shape_available)
+    if section_ready:
+        levels.append("Seção eleitoral (locais)")
+    level = st.radio("Detalhamento geográfico", levels, index=0)
+    if level in ("Automático", "Seção eleitoral (locais)"):
+        st.caption(
+            "Navegação no próprio mapa: hover mostra resultados; "
+            "clique e zoom revelam os locais de votação."
+        )
+    if zone != "Todas":
+        st.caption(
+            "O filtro corresponde aos votos da zona, não ao perímetro "
+            "territorial de uma seção."
+        )
     mode = st.radio("Visualização", ["Vencedor por região", "Votação de candidato"])
+    st.caption(
+        f"Legenda: 🔴 PT (13) · 🔵 PL (22) "
+        "· demais legendas com cores distintas. "
+        "A cor corresponde ao número eleitoral."
+    )
     total_per_candidate = (
         votes.filter(pl.col("tipo_voto") == "nominal")
         .group_by("candidato").agg(pl.col("votos").sum())
@@ -259,6 +351,25 @@ with st.sidebar:
         if mode == "Votação de candidato" and not total_per_candidate.is_empty()
         else None
     )
+
+
+# Transparencia de cobertura calculada durante a preparacao do dataset.
+# Sao informacoes ao leitor do mapa, nunca instrucoes de terminal.
+coverage = catalog.get("cobertura", {})
+if coverage:
+    state_count = coverage.get("ufs_importadas", 0)
+    expected = coverage.get("ufs_esperadas", 27)
+    missing = coverage.get("ufs_ausentes", [])
+    if missing:
+        st.caption(
+            f"Cobertura territorial carregada: {state_count}/{expected} UFs. "
+            f"Arquivos estaduais ausentes: {', '.join(missing)}."
+        )
+    else:
+        st.caption(
+            f"Arquivos estaduais disponíveis: {state_count}/{expected} UFs. "
+            "A conferência dos arquivos não substitui a totalização oficial."
+        )
 
 
 def total_votos(tipo: str) -> int:
@@ -276,18 +387,37 @@ m4.metric("Zonas representadas", votes.select(["uf", "zona"]).unique().height)
 
 left, right = st.columns([3, 1], gap="large")
 with left:
-    polygons = load_shape(level)
+    # Auto e seções preservam a malha municipal como base permanente.
+    # Somente o modo de zona explicito usa uma geometria real de zonas.
+    effective_level = (
+        "Município" if level in ("Automático", "Seção eleitoral (locais)")
+        else level
+    )
+    polygons = load_shape(effective_level)
     if polygons is None:
-        st.warning(f"Sem malha geográfica de {level.lower()}. Importe usando make geo-import.")
+        st.info("A camada territorial deste recorte não está disponível.")
     else:
         try:
-            boundaries, scoped = shape_for_votes(polygons, votes, level)
-            matched = scoped.filter(pl.col("map_id").is_not_null() & (pl.col("map_id") != ""))
+            boundaries, scoped = shape_for_votes(
+                polygons, votes, effective_level
+            )
+            matched = scoped.filter(
+                pl.col("map_id").is_not_null()
+                & (pl.col("map_id") != "")
+            )
             if matched.height < scoped.height:
-                st.info(f"{scoped.height - matched.height} linhas sem correspondência geográfica.")
-            draw_map(boundaries, matched, mode, candidate, level)
+                st.caption(
+                    f"{scoped.height - matched.height:,} registros sem "
+                    "correspondência cartográfica neste recorte."
+                )
+            draw_map(
+                boundaries, matched, mode, candidate, effective_level,
+                year=year, uf=uf, cargo=cargo, turno=turno,
+                municipality=municipality, zone=zone, detail=level,
+                section_ready=section_ready,
+            )
         except (ValueError, KeyError, pl.exceptions.PolarsError) as exc:
-            st.error(f"Mapa indisponível: {exc}")
+            st.error(f"Mapa não disponível: {exc}")
 
 with right:
     st.subheader(f"{cargo} · {turno}º turno")
@@ -296,7 +426,10 @@ with right:
         pct = 100 * record["votos"] / total if total else 0
         st.markdown(f'**{record["candidato"]}** — {record["votos"]:,} votos · {pct:.2f}%')
         st.progress(min(1.0, pct / 100))
-    st.caption(f"{len(uf_opts)} UFs no conjunto processado; cobertura pode ser parcial.")
+    st.caption(
+        f"{len(uf_opts)} UFs no conjunto consultado. "
+        "A disponibilidade depende dos arquivos oficiais incorporados."
+    )
 
 st.subheader("Detalhamento por zona eleitoral")
 table = (
@@ -304,6 +437,6 @@ table = (
     .agg(pl.col("votos").sum())
     .sort("votos", descending=True)
 )
-st.dataframe(table, use_container_width=True, hide_index=True)
+st.dataframe(table, width="stretch", hide_index=True)
 st.download_button("Exportar seleção CSV", table.write_csv().encode("utf-8-sig"),
                    file_name=f"atlas_{year}_turno{turno}.csv", mime="text/csv")
