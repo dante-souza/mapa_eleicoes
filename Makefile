@@ -29,6 +29,7 @@ help:
 	@echo "  make download UF=BR                       baixa ZIP presidencial do TSE"
 	@echo "  make ingest ANO=2026 [UF=RR]            agrega votacao por municipio/zona"
 	@echo "  make crosswalk FILE=de_para.csv         importa correspondencia TSE/IBGE"
+	@echo "  make geo-import                         prepara malha municipal oficial (auto/cache)"
 	@echo "  make geo-import FILE=malha.gpkg          prepara GeoJSON municipal"
 	@echo "  make geo-import FILE=zonas.geojson LEVEL=zona"
 	@echo "  make geo-setup GEO_YEAR=2025            download oficial IBGE/TSE + normalizacao"
@@ -70,8 +71,10 @@ ingest: bootstrap
 crosswalk: bootstrap
 	$(VENV_PY) -m mapa_eleicoes.cli crosswalk --file "$(FILE)"
 
+# Sem FILE, usa o mesmo setup oficial (com cache) de make geo-setup.
+# LEVEL=zona sem FILE falha de maneira explicita, sem inventar limites.
 geo-import: bootstrap
-	$(VENV_PY) -m mapa_eleicoes.cli geo-import --file "$(FILE)" --level $(LEVEL)
+	$(VENV_PY) -m mapa_eleicoes.geography import $(if $(strip $(FILE)),--file "$(FILE)",) --level $(LEVEL) --geo-year $(GEO_YEAR) --simplify-meters $(SIMPLIFY_METERS) $(if $(filter 1,$(FORCE)),--force,)
 
 # Operacao pontual, com cache: nao redescarrega 226 MB no make run.
 # MALHA/CROSSWALK podem apontar ZIPs/GeoJSON/CSV baixados manualmente.
