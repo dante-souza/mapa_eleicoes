@@ -160,6 +160,14 @@ class CityFocus(MacroElement):
                     });
                 }
             });
+            // Fallback: se Canvas/pane impedir a entrega direta do clique
+            // ao polígono, resolver a cidade pela coordenada no próprio mapa.
+            // Não duplicar quando o clique já passou pelo listener da feição.
+            map.on("click", function (e) {
+                if (e.sourceTarget && idOf(e.sourceTarget)) { return; }
+                var city = e.latlng ? cityAt(e.latlng) : null;
+                if (city) { focusCity(city); }
+            });
 
             // st_folium pode redesenhar o componente após um clique para
             // carregar locais de votação. Restaura foco/câmera explicitamente.
