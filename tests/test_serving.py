@@ -108,3 +108,19 @@ def test_geo_status_in_catalog_without_fake_zones(tmp_path):
     }
     saved = json.loads((tmp_path / "serving" / "2026" / "catalog.json").read_text())
     assert saved["geografia"] == manifest["geografia"]
+
+
+
+def test_coverage_catalog_distinguishes_missing_state_and_second_turn(tmp_path):
+    values = rows("RR")
+    values["cargo"] = ["Presidente", "Presidente", "Presidente"]
+    values["turno"] = [1, 1, 1]
+    make_source(tmp_path, "BR", values)
+    catalog = serving.prepare_serving(2026, root=tmp_path)
+    coverage = catalog["cobertura"]
+    assert coverage["ufs_importadas"] == 0
+    assert coverage["ufs_esperadas"] == 27
+    assert "PR" in coverage["ufs_ausentes"]
+    assert coverage["arquivo_presidencial"] is True
+    assert coverage["turnos_presidente"] == [1]
+    assert coverage["completo_em_ufs"] is False
