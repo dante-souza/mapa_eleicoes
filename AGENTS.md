@@ -21,3 +21,6 @@
 
 17. **Base cartográfica pública:** não usar tiles CARTO sem chave de API; preferir OpenStreetMap com atribuição visível. Filtro de cor só nos tiles, nunca nos polígonos eleitorais; testar HTML gerado pelo Folium.
 18. **Streamlit:** substituir `use_container_width` de elementos nativos por `width="stretch"`. Não confundir esse parâmetro com a API própria do `st_folium`.
+
+19. **Paleta eleitoral estável:** candidato/legenda 13 (PT) em vermelho #ff5555 e 22 (PL) em azul #3b82f6; nunca inferir por ordenacao no ranking, nem pelo nome Lula. Para demais numeros, cores fixas por prefixo de NR_VOTAVEL. Validar partidos no dataset oficial quando houver coligacao/candidatura excepcional.
+20. **Make geo-import sem arquivo:** ausência de FILE para municipios deve configurar fontes oficiais com cache; LEVEL=zona requer arquivo proprio, jamais fabricar zonas a partir de municipios. Cobrir os dois casos em testes.
