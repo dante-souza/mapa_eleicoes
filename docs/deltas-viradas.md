@@ -31,7 +31,7 @@ Na página **Deltas e viradas**, abra **Camadas** no canto superior direito do m
 
 O controle de camadas é do Leaflet e funciona no navegador: ao ativar uma das opções, a outra é desligada sem rerun do Streamlit, mantendo zoom, centro e mapa-base OSM. Também é possível desligar as duas, deixando somente os contornos territoriais sobre o mapa-base.
 
-**Desempenho:** polígonos geográficos serializados uma só vez, com coordenadas arredondadas a quatro casas decimais, reaproveitados pelos dois modos via troca de estilo JavaScript. As setas são um único GeoJSON com geometrias `MultiLineString`, sem milhares de instâncias de `Marker`. Regiões sem dados comparáveis conservam seus contornos, mas nunca recebem setas nem preenchimento eleitoral fictício. O filtro "Somente viradas" mantém as divisões territoriais visíveis.
+**Desempenho:** polígonos geográficos serializados uma só vez, com coordenadas arredondadas a quatro casas decimais, reaproveitados pelos dois modos via troca de estilo JavaScript. As setas são desenhadas num único Canvas Leaflet em pixels, sem milhares de instâncias de `Marker`; as feições eleitorais continuam no GeoJSON para os tooltips. Regiões sem dados comparáveis conservam seus contornos, mas nunca recebem setas nem preenchimento eleitoral fictício. O filtro "Somente viradas" mantém as divisões territoriais visíveis.
 
 **Escopo das divisas:** a camada territorial segue o detalhamento selecionado: municípios oficiais IBGE ou áreas **aproximadas** de zonas dentro de cada município. A UF selecionada delimita o recorte, e o mapa-base apresenta o contexto cartográfico das divisas estaduais. Não foi inventada uma malha oficial de zonas eleitorais.
 
@@ -86,8 +86,7 @@ A visualização alternativa **Áreas por delta (sem setas)** permanece
 disponível no controle Leaflet; no zoom máximo (quando houver geometria de
 zona preparada) o preenchimento passa das áreas municipais para as áreas
 aproximadas das zonas, preservando o contexto dos limites municipais.
-Em zoom afastado o preenchimento permanece municipal; somente as setas
-são agregadas por UF. A direção das setas é simbólica, não movimento de
+Em zoom afastado **tanto os contornos quanto o preenchimento e as setas são estaduais**. As UFs são construídas por união das geometrias municipais do IBGE, sem limites retangulares artificiais. A direção das setas é simbólica, não movimento de
 eleitores. As setas estaduais são posicionadas sobre um município existente
 próximo ao centro da UF; não se usa `union_all` nem dissolução territorial.
 
@@ -164,3 +163,49 @@ destacar a região e escurecer o entorno; arrastar/usar o scroll deve
 continuar operando; Esc ou Voltar retorna ao mapa original. Repetir com
 **Município** e selecionar novamente Automático para testar o rerun
 com carregamento de locais. A página de deltas não altera esses controles.
+
+## Escalas territoriais completas e setas legíveis (revisão adicional)
+
+**Apenas o mapa de Deltas e viradas foi modificado nesta revisão.**
+O Atlas Eleitoral principal, o foco municipal, os cliques, o zoom e a navegação
+que já voltaram a funcionar não foram alterados.
+
+| Zoom Leaflet | Divisões e setas | Área preenchida |
+| --- | --- | --- |
+| 0–6 | Uma borda **estadual** e uma seta **maior** por UF com delta | Estado colorido pelo delta agregado |
+| 7–10 | Bordas municipais e setas individuais (com limitação de sobreposição visual) | Municípios coloridos pelo delta |
+| 11+ | Bordas e setas das zonas aproximadas se a UF tiver malha preparada; sem isso, municípios | Zonas (ou municípios na ausência da malha) |
+
+As setas deixam de ser linhas de comprimento fixado em graus de latitude.
+São símbolos sobre um **único Canvas Leaflet**, com comprimento de referência
+em **pixels** (estado 40–68 px, município 21–37 px e zona 16–27 px),
+espessura diferente para cada nível e contorno claro para contrastar
+com os tiles escuros. O sinal do delta ainda determina a direção e
+a cor original do Atlas (vermelho `#d60828`, azul `#272d97`).
+O tamanho também varia com a magnitude relativa, sem alegar transferência
+individual de votos nem movimento geográfico real.
+
+Os municípios muito próximos podem compartilhar poucos pixels na escala
+intermediária: para evitar uma nuvem ilegível de setas, o Canvas prioriza
+visualmente o maior delta absoluto por pequena célula de tela. **Os votos
+e agregados não são descartados nem alterados**; apenas parte dos símbolos
+sobrepostos fica oculta até o usuário aproximar.
+
+O modo **Áreas por delta (sem setas)** mantém as mesmas três escalas e
+esconde todas as setas. A alternância no controle de camadas e o zoom
+ocorrem inteiramente no Leaflet, sem reiniciar a página.
+
+A geometria de zona continua condicionada à seleção de uma UF com arquivo
+`zonas_municipio_UF.geojson` pronto. No mapa nacional, as 27 malhas zonais
+não são carregadas simultaneamente por razões de memória. Os contornos
+estaduais são criados a partir da união de municípios IBGE 2025, e zonas
+continuam explicitamente classificadas como aproximações IBGE/TSE.
+
+### Validação
+
+Depois de atualizar a branch e reiniciar o servidor, confirme que:
+- No zoom nacional só há fronteiras estaduais e setas grandes por UF.
+- Ao cruzar o zoom 7 aparecem os municípios com setas legíveis.
+- No zoom 11+, com uma UF preparada, surgem as zonas aproximadas e suas setas.
+- Em **Áreas por delta**, os preenchimentos seguem o mesmo nível, sem setas.
+- A página **Atlas Eleitoral** mantém intacto o clique e o foco municipal.
