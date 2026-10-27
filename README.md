@@ -1,3 +1,78 @@
+# Gradiente eleitoral e detalhamento por seção (2026)
+
+O Atlas utiliza a **mesma paleta estável por número eleitoral** (PT/13 vermelho,
+PL/22 azul, demais partidos cores distintas), mas o preenchimento
+agora varia **continuamente entre 0% e 100% de votos nominais** do
+candidato no recorte representado. Tonalidade clara significa participação
+percentual menor; saturação maior significa porcentagem maior.
+A porcentagem calculada usa votos nominais válidos do cargo/turno,
+**não** aptos, abstenções ou todos os cargos somados.
+
+## Mapa por seção eleitoral
+
+O arquivo TSE `votacao_secao_2026_UF.zip` inclui `NR_ZONA` e
+`NR_SECAO`. O Atlas passou a preservar cada seção, candidata/candidato,
+cargo e turno em Parquets de `data/serving/ANO/secoes/`. A agregação
+municipal existente continua separada — **não duplicar** os totais.
+
+A posição espacial vem de **outra fonte oficial**, o cadastro
+[Eleitorado por local de votação — 2026](https://dadosabertos.tse.jus.br/dataset/eleitorado-2026),
+que possui coordenadas dos locais de votação, não fronteiras de seções.
+
+Link oficial do ZIP:
+
+`https://cdn.tse.jus.br/estatistica/sead/odsele/eleitorado_locais_votacao/eleitorado_local_votacao_2026.zip`
+
+### Instruções PowerShell
+
+```powershell
+git fetch origin --prune
+git switch feature/geo-ibge-tse-crosswalk
+git merge --ff-only origin/feature/geo-ibge-tse-crosswalk
+
+make test
+
+# Preparacao por secao; processamento incremental, uma primeira passagem
+# sobre cada ZIP bruto, sem baixar os resultados ja presentes.
+make prepare-sections ANO=2026
+
+# Downloads oficiais e cache da posicao dos locais TSE.
+make prepare-locations ANO=2026
+
+# Abre os resultados locais sem disparar reprocessamento dos ZIPs grandes.
+make preview ANO=2026
+
+# Operacao integral padrao (sincroniza, valida, prepara tudo e abre app).
+make run ANO=2026
+```
+
+Se o cadastro de locais foi baixado manualmente:
+
+```powershell
+make prepare-locations ANO=2026 SECTION_FILE="C:/Users/dante/Downloads/eleitorado_local_votacao_2026.zip"
+```
+
+**Como usar:** selecione uma UF e um município, depois **Detalhamento
+geográfico → Seção eleitoral (locais)**. Os pontos representam
+**locais oficiais**; várias seções podem compartilhar o mesmo ponto.
+Cada popup relaciona números de seção, total de votos válidos,
+candidato com mais votos e respectivo percentual. O seletor de seção
+filtra os votos sem fabricar uma forma territorial para a seção.
+
+Os locais sem coordenadas continuam consultáveis em tabelas; não
+são deslocados artificialmente para o centro do município.
+Para limitar uso de memória e tempo de renderização, a interface não
+desenha de uma vez todos os locais do Brasil: é necessário selecionar
+UF e município. O mapa limita a quantidade de locais por renderização
+e informa a contagem quando uma seleção é muito ampla.
+
+**Precisão:** a mesma seção pode mudar de local entre os turnos;
+a chave de vinculação inclui `UF + município TSE + zona + seção + turno`.
+Uma representação por ponto **não** define área territorial, perímetro
+da zona ou endereço residencial de eleitor.
+
+---
+
 # Atlas Eleitoral — Dados prontos para o mapa
 
 **Contrato da aplicacao (outubro/2026):** a interface Streamlit
