@@ -23,6 +23,35 @@ make data-pack ANO=2026
 
 O comando `make import-dir` legado considera apenas os ZIPs `votacao_secao_*`; use **`make run DIR=...`** para incluir tambem os tres datasets agregados `munzona`. Sem arquivos reconhecidos, nenhum bundle sera gerado; confira se os downloads sao arquivos ZIP reais (e nao atalhos ou links). O `make data-pack` cria `data/bundles/tse_raw_2026_bundle.zip` somente com os originais que ja foram importados.
 
+## Mapas-base e compatibilidade de interface (outubro/2026)
+
+O raster `CartoDB dark_matter` passou a exigir uma chave de API e
+produzia a marca d'agua `API KEY REQUIRED` em todos os tiles. O painel
+agora usa **OpenStreetMap**, que funciona sem chave para uso moderado,
+com filtro CSS aplicado somente aos tiles para manter o visual
+escuro/Dracula. As cores dos resultados, geometrias e tooltips
+continuam independentes da aparencia do mapa-base.
+
+A tabela Streamlit utiliza `width="stretch"` no lugar do antigo
+`use_container_width=True`. A integracao `st_folium` continua usando
+seu parametro proprio de largura, documentado por essa biblioteca.
+
+O tooltip municipal exibe **nome do municipio + codigo IBGE + resultado**;
+o join eleitoral permanece feito **apenas pelo codigo IBGE**.
+
+```powershell
+git fetch origin --prune
+git switch feature/geo-ibge-tse-crosswalk
+git merge --ff-only origin/feature/geo-ibge-tse-crosswalk
+make test
+make preview
+```
+
+No filtro de **DF/Brasilia**, ver somente **um poligono municipal**
+e esperado; mapa de zona exige fonte geoespacial propria. O
+`make preview` nao precisa reprocessar os ZIPs gigantes nem baixar
+a malha ja preparada.
+
 ## Mapa municipal oficial: IBGE + correspondencia TSE/IBGE
 
 **O mapa precisa de dois datasets adicionais:** (1) geometrias municipais IBGE e
