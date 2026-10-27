@@ -22,16 +22,17 @@ import folium
 from branca.element import MacroElement
 from jinja2 import Template
 
+from mapa_eleicoes.geo_payload import BoundedGeoJson
 from mapa_eleicoes.map_navigation import ZONE_ZOOM
 
-# Fora de foco: quase preto, com divisas apenas sugeridas.
-DIM_STYLE = {"fillColor": "#0e0e0f", "fillOpacity": 1.0, "color": "#232326", "weight": 0.4}
+# Fora de foco: quase preto semi-transparente, some no tile escurecido.
+DIM_STYLE = {"fillColor": "#0e0e0f", "fillOpacity": 0.82, "color": "#1a1a1d", "weight": 0.3}
 FOCUS_STYLE = {"color": "#ffffff", "weight": 2.8, "fillOpacity": 1.0}
 
 # Fundo (tiles) escurecido enquanto ha foco; botao "Voltar" no estilo do mapa.
 FOCUS_CSS = """
 <style>
-.atlas-focus .leaflet-tile-pane { filter: brightness(.25); transition: filter .25s; }
+.atlas-focus .leaflet-tile-pane { filter: brightness(.12); transition: filter .25s; }
 .leaflet-tile-pane { transition: filter .25s; }
 .atlas-back {
   display: none; cursor: pointer; padding: 6px 12px; border-radius: 6px;
@@ -189,8 +190,13 @@ class FocusBackdrop(MacroElement):
         self.css = FOCUS_CSS
 
 
-def context_layer(geometry_json: dict) -> folium.GeoJson:
+def context_layer(geometry_json: dict, *, bounds: list[list[float]] | None = None) -> folium.GeoJson:
     """Municipios fora do recorte (mesma UF), no cinza apagado e sem hover."""
+    if bounds is not None:
+        return BoundedGeoJson(
+            geometry_json, bounds=bounds, name="Contexto",
+            style_function=lambda _: dict(DIM_STYLE), interactive=False, control=False,
+        )
     return folium.GeoJson(
         geometry_json,
         name="Contexto",
