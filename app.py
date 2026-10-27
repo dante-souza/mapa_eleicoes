@@ -16,9 +16,12 @@ from streamlit_folium import st_folium
 
 from mapa_eleicoes.geo_bridge import add_properties, ibge_code, zone_code
 from mapa_eleicoes.map_tiles import atlas_map
-from mapa_eleicoes.party_colors import color_for_number
 from mapa_eleicoes.office_catalog import available_offices, available_turns, preferred_office
 from mapa_eleicoes.dashboard_options import round_label, geometry_options
+from mapa_eleicoes.vote_gradients import percentage_shade, legend_html
+from mapa_eleicoes.section_map import (
+    load_sections, load_locations, section_detail, render_site_points,
+)
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -198,7 +201,8 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         display["destaque"] = [round(float(value or 0), 2) for value in joined["destaque"]]
     geojson = json.loads(display.to_json(drop_id=True))
     color_by_key = dict(zip(joined["map_id"], [
-        color_for_number(number) for number in joined["numero"]
+        percentage_shade(number, pct)
+        for number, pct in zip(joined["numero"], joined["pct"])
     ]))
     highlight = dict(zip(joined["map_id"], [
         float(value or 0) for value in joined.get("destaque", [0] * len(joined))
@@ -211,9 +215,11 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         key = feature["properties"]["map_id"]
         intensity = min(1.0, max(0.05, highlight.get(key, 0) / 100.0))
         return {
-            "fillColor": color_for_number(selected_number) if mode == "Votação de candidato"
+            "fillColor": percentage_shade(
+                selected_number, highlight.get(key, 0.0)
+            ) if mode == "Votação de candidato"
                          else color_by_key.get(key, "#44475a"),
-            "fillOpacity": 0.15 + 0.8 * intensity if mode == "Votação de candidato" else 0.78,
+            "fillOpacity": 0.86,
             "color": "#11111b", "weight": 0.45,
         }
 
@@ -233,6 +239,9 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         tooltip=folium.GeoJsonTooltip(fields=fields, aliases=aliases, sticky=False),
     ).add_to(map_view)
     map_view.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+    map_view.get_root().html.add_child(
+        folium.Element(legend_html("percentual"))
+    )
     st_folium(map_view, height=700, returned_objects=[], use_container_width=True)
     st.caption(f"{len(display)} polígonos exibidos · Geometria: {level} · Sem inferir zonas")
 
@@ -301,12 +310,19 @@ with st.sidebar:
     # usa municipios. A selecao de zona continua filtrando votos, mas
     # nunca apresenta um municipio como poligono eleitoral de zona.
     zone_shape_available = (DATA / "geo" / "zonas.geojson").is_file()
+    section_ready = (
+        (DATA / "serving" / str(year) / "secoes" / "catalog.json").exists()
+        and (DATA / "serving" / str(year) / "locais.parquet").exists()
+    )
     levels = geometry_options(zone_shape_available)
-    if len(levels) > 1:
-        level = st.radio("Geometria", levels)
-    else:
-        level = levels[0]
-        st.caption("Mapa municipal. A votacao por zona aparece nos filtros e na tabela.")
+    if section_ready:
+        levels.append("Seção eleitoral (locais)")
+    level = st.radio("Detalhamento geográfico", levels)
+    if level == "Seção eleitoral (locais)":
+        st.caption(
+            "Os pontos correspondem a locais oficiais de votação; "
+            "cada popup detalha as seções do endereço."
+        )
     if level == "Município" and zone != "Todas":
         st.caption("Os votos refletem a zona escolhida; o contorno e do municipio.")
     mode = st.radio("Visualização", ["Vencedor por região", "Votação de candidato"])
@@ -361,21 +377,96 @@ m4.metric("Zonas representadas", votes.select(["uf", "zona"]).unique().height)
 
 left, right = st.columns([3, 1], gap="large")
 with left:
-    polygons = load_shape(level)
-    if polygons is None:
-        st.info("A camada territorial desta visualizacao nao esta disponivel no conjunto de dados.")
-    else:
-        try:
-            boundaries, scoped = shape_for_votes(polygons, votes, level)
-            matched = scoped.filter(pl.col("map_id").is_not_null() & (pl.col("map_id") != ""))
-            if matched.height < scoped.height:
-                st.caption(
-                    f"{scoped.height - matched.height:,} registros nao puderam "
-                    "ser associados ao mapa territorial."
+    if level == "Seção eleitoral (locais)":
+        # Mais de 400 mil secoes no pais nao devem ser materializadas no
+        # navegador. Primeiro escolher UF e municipio, depois renderizar
+        # pontos reais dos locais e a tabela individual das secoes.
+        if uf == "Todas" or municipality == "Todos":
+            st.info(
+                "Para visualizar as seções no mapa, selecione uma UF "
+                "e um município na barra lateral."
+            )
+        else:
+            codes = sorted(votes.get_column("cd_municipio_tse").unique().to_list())
+            section_votes = load_sections(
+                DATA, year, uf, codes, cargo, turno,
+                zona=None if zone == "Todas" else int(zone),
+            )
+            if section_votes.is_empty():
+                st.info("Não há resultados por seção para este recorte eleitoral.")
+            else:
+                section_filter = st.selectbox(
+                    "Seção eleitoral",
+                    ["Todas"] + sorted(section_votes["secao"].unique().to_list()),
+                    key=f"secao_{year}_{uf}_{municipality}_{cargo}_{turno}",
                 )
-            draw_map(boundaries, matched, mode, candidate, level)
-        except (ValueError, KeyError, pl.exceptions.PolarsError) as exc:
-            st.error(f"Mapa indisponível: {exc}")
+                if section_filter != "Todas":
+                    section_votes = section_votes.filter(
+                        pl.col("secao") == int(section_filter)
+                    )
+                official_locations = load_locations(DATA, year, uf, codes, turno)
+                selection_number = None
+                if mode == "Votação de candidato" and candidate:
+                    numbers = (
+                        section_votes.filter(
+                            (pl.col("tipo_voto") == "nominal")
+                            & (pl.col("candidato") == candidate)
+                        ).select("numero").unique()
+                    )
+                    if not numbers.is_empty():
+                        selection_number = numbers["numero"][0]
+                try:
+                    section_rows, site_rows, no_geo = section_detail(
+                        section_votes, official_locations,
+                        selected_number=selection_number,
+                    )
+                    if site_rows.is_empty():
+                        st.info(
+                            "Os resultados das seções estão disponíveis, mas "
+                            "não há coordenadas oficiais correspondentes "
+                            "a estes locais de votação."
+                        )
+                    else:
+                        map_view, total_sites, hidden = render_site_points(
+                            section_rows, site_rows,
+                            selected_number=selection_number,
+                        )
+                        st_folium(
+                            map_view, height=700, returned_objects=[],
+                            use_container_width=True,
+                        )
+                        st.caption(
+                            f"{total_sites:,} locais georreferenciados · "
+                            f"{section_rows.height:,} seções representadas · "
+                            f"{no_geo:,} seções sem coordenadas oficiais."
+                            + (
+                                f" Mostrando 1.800 locais; refine a seleção "
+                                f"para visualizar outros {hidden:,}."
+                                if hidden else ""
+                            )
+                        )
+                    st.subheader("Resultados por seção eleitoral")
+                    st.dataframe(
+                        section_votes, width="stretch", hide_index=True
+                    )
+                except (ValueError, KeyError, pl.exceptions.PolarsError) as exc:
+                    st.error(f"Esta visualização não está disponível: {exc}")
+    else:
+        polygons = load_shape(level)
+        if polygons is None:
+            st.info("A camada territorial desta visualizacao nao esta disponivel no conjunto de dados.")
+        else:
+            try:
+                boundaries, scoped = shape_for_votes(polygons, votes, level)
+                matched = scoped.filter(pl.col("map_id").is_not_null() & (pl.col("map_id") != ""))
+                if matched.height < scoped.height:
+                    st.caption(
+                        f"{scoped.height - matched.height:,} registros nao puderam "
+                        "ser associados ao mapa territorial."
+                    )
+                draw_map(boundaries, matched, mode, candidate, level)
+            except (ValueError, KeyError, pl.exceptions.PolarsError) as exc:
+                st.error(f"Mapa indisponível: {exc}")
 
 with right:
     st.subheader(f"{cargo} · {turno}º turno")
