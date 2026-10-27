@@ -25,12 +25,15 @@ from mapa_eleicoes.map_navigation import valid_position
 from mapa_eleicoes.results import br_number, region_results
 from mapa_eleicoes.vote_gradients import NO_DATA, margin_shade, percentage_shade
 from mapa_eleicoes.zone_geometry import ZONE_KEYS, district_file, zone_file
+from mapa_eleicoes.zone_names import zone_label
 
 MAX_ZONE_AREAS = 900
 
 
 DISTRICT_KEYS = ["uf", "zona"]
-APPROXIMATE_NOTE = "Área aproximada (setores IBGE 2022 + locais TSE)"
+# Nome = bairro (zona na cidade) ou municipio com mais secoes: zone_names.
+APPROXIMATE_NOTE = "Área aproximada e nome derivado (IBGE 2022 + TSE)"
+Labels = tuple[dict[str, str], dict[str, str]]  # ver zone_names.zone_labels
 
 
 def zone_areas_available(root: Path) -> bool:
@@ -106,7 +109,7 @@ def _result_layer(
     areas: gpd.GeoDataFrame, results: pl.DataFrame, titles: list[str], *,
     layer_name: str, selected_number: str | None, highlight_zone: int | None,
     pane: str | None, extra: dict[str, tuple[str, list[str]]] | None = None,
-    fill_opacity: float = 0.9,
+    fill_opacity: float = 1.0,
 ) -> folium.FeatureGroup:
     """Poligonos coloridos + tooltip comum as duas camadas de zona."""
     defaults = {
@@ -194,6 +197,7 @@ def zone_layer(
     selected_number: str | None = None,
     highlight_zone: int | None = None,
     pane: str | None = None,
+    labels: Labels | None = None,
 ) -> tuple[folium.FeatureGroup | None, int]:
     """Zonas dentro das cidades com mais de uma zona; (None, 0) sem dados."""
     if areas is None or areas.empty:
@@ -211,10 +215,13 @@ def zone_layer(
         return None, 0
     areas = areas.iloc[:MAX_ZONE_AREAS]
     names = names or {}
-    titles = [
-        f"Zona {int(zona)} · {escape(names.get(f'{uf}:{tse}', str(tse)))} ({escape(str(uf))})"
-        for zona, tse, uf in zip(areas["zona"], areas["cd_municipio_tse"], areas["uf"])
-    ]
+    neighborhood, seat = labels or ({}, {})
+    titles = []
+    for zona, tse, uf in zip(areas["zona"], areas["cd_municipio_tse"], areas["uf"]):
+        city = escape(names.get(f"{uf}:{tse}", str(tse)))
+        name = zone_label(uf, zona, tse, neighborhood, seat, names)
+        head = f"Zona {int(zona)} · {escape(name)}" if name else f"Zona {int(zona)}"
+        titles.append(f"{head} — {city} ({escape(str(uf))})")
     layer = _result_layer(
         areas, results, titles, layer_name="Zonas eleitorais (área aproximada)",
         selected_number=selected_number, highlight_zone=highlight_zone, pane=pane,
@@ -237,6 +244,7 @@ def district_layer(
     selected_number: str | None = None,
     highlight_zone: int | None = None,
     pane: str | None = None,
+    labels: Labels | None = None,
 ) -> tuple[folium.FeatureGroup | None, int]:
     """Zona inteira (uf, zona), atravessando municipios; (None, 0) sem dados."""
     if districts is None or districts.empty:
@@ -249,10 +257,12 @@ def district_layer(
     if districts.empty:
         return None, 0
     names = names or {}
-    titles = [
-        f"Zona {int(zona)} ({escape(str(uf))})"
-        for zona, uf in zip(districts["zona"], districts["uf"])
-    ]
+    neighborhood, seat = labels or ({}, {})
+    titles = []
+    for zona, uf in zip(districts["zona"], districts["uf"]):
+        name = zone_label(uf, zona, None, neighborhood, seat, names)
+        head = f"Zona {int(zona)} · {escape(name)}" if name else f"Zona {int(zona)}"
+        titles.append(f"{head} ({escape(str(uf))})")
     cities = [
         _city_list(codes, str(uf), names)
         for codes, uf in zip(districts["municipios_tse"], districts["uf"])

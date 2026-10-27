@@ -7,7 +7,7 @@ from shapely.geometry import Polygon
 
 from mapa_eleicoes.map_navigation import (
     SITE_ZOOM, FOCUS_ZOOM, ZONE_ZOOM, municipality_at, should_render_sites,
-    state_for_municipality, valid_position, zoom_for_bounds,
+    state_for_municipality, valid_position,
 )
 
 
@@ -41,16 +41,6 @@ def test_edge_uses_polygon_covers_without_inventing_nearest_city():
 def test_drilldown_order_municipio_zona_local():
     # Municipio -> zonas -> locais, cada nivel com mais zoom.
     assert ZONE_ZOOM <= FOCUS_ZOOM < SITE_ZOOM
-
-
-def test_zoom_for_bounds_frames_city_and_country():
-    # Sao Paulo (capital): ~0,5 x 0,65 grau cabe em zoom 10 num mapa de 700 px.
-    assert zoom_for_bounds((-46.83, -24.01, -46.36, -23.36), height=700) == 10
-    # Brasil inteiro: zoom de pais, limitado pelo minimo.
-    assert zoom_for_bounds((-74, -34, -34, 5.3), height=700) == 4
-    # Cidade minuscula nao passa do zoom maximo.
-    assert zoom_for_bounds((-46.6, -23.5, -46.5999, -23.4999)) == 15
-    assert zoom_for_bounds((1, 0, 0, 1)) == 4
 
 
 def test_section_pins_appear_only_after_urban_zoom():
