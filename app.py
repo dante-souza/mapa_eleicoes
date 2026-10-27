@@ -407,11 +407,16 @@ with left:
                 official_locations = load_locations(DATA, year, uf, codes, turno)
                 selection_number = None
                 if mode == "Votação de candidato" and candidate:
+                    # Numero vem do recorte municipal/UF, nao das linhas
+                    # da secao corrente: candidato com ZERO votos na secao
+                    # tambem precisa manter sua cor e seu percentual 0%.
                     numbers = (
-                        section_votes.filter(
+                        votes.filter(
                             (pl.col("tipo_voto") == "nominal")
                             & (pl.col("candidato") == candidate)
-                        ).select("numero").unique()
+                        )
+                        .group_by("numero").agg(pl.col("votos").sum())
+                        .sort(["votos", "numero"], descending=[True, False])
                     )
                     if not numbers.is_empty():
                         selection_number = numbers["numero"][0]
