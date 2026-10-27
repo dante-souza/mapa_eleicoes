@@ -327,6 +327,25 @@ with st.sidebar:
     )
 
 
+# Transparencia de cobertura calculada durante a preparacao do dataset.
+# Sao informacoes ao leitor do mapa, nunca instrucoes de terminal.
+coverage = catalog.get("cobertura", {})
+if coverage:
+    state_count = coverage.get("ufs_importadas", 0)
+    expected = coverage.get("ufs_esperadas", 27)
+    missing = coverage.get("ufs_ausentes", [])
+    if missing:
+        st.caption(
+            f"Cobertura territorial carregada: {state_count}/{expected} UFs. "
+            f"Arquivos estaduais ausentes: {', '.join(missing)}."
+        )
+    else:
+        st.caption(
+            f"Arquivos estaduais disponíveis: {state_count}/{expected} UFs. "
+            "A conferência dos arquivos não substitui a totalização oficial."
+        )
+
+
 def total_votos(tipo: str) -> int:
     return int(votes.filter(pl.col("tipo_voto") == tipo).get_column("votos").sum() or 0)
 
