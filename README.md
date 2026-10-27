@@ -23,6 +23,76 @@ make data-pack ANO=2026
 
 O comando `make import-dir` legado considera apenas os ZIPs `votacao_secao_*`; use **`make run DIR=...`** para incluir tambem os tres datasets agregados `munzona`. Sem arquivos reconhecidos, nenhum bundle sera gerado; confira se os downloads sao arquivos ZIP reais (e nao atalhos ou links). O `make data-pack` cria `data/bundles/tse_raw_2026_bundle.zip` somente com os originais que ja foram importados.
 
+## Mapa municipal oficial: IBGE + correspondencia TSE/IBGE
+
+**O mapa precisa de dois datasets adicionais:** (1) geometrias municipais IBGE e
+(2) de/para dos codigos de municipios, publicados pelo TSE. Ambos sao
+referencias geograficas, independentes dos ZIPs de votacao por secao.
+
+**Fontes oficiais verificadas:**
+- IBGE, `BR_Municipios_2025.zip` (aprox. 226 MB): <https://geoftp.ibge.gov.br/organizacao_do_territorio/malhas_territoriais/malhas_municipais/municipio_2025/Brasil/BR_Municipios_2025.zip>
+- TSE, `municipio_tse_ibge.zip`: <https://cdn.tse.jus.br/estatistica/sead/odsele/municipio_tse_ibge/municipio_tse_ibge.zip>
+- Portal TSE: <https://dadosabertos.tse.jus.br/dataset/codigos-oficiais-de-uf-e-municipios-segundo-o-tse-e-o-ibge>
+
+A malha IBGE 2025 contem **5.573 geocodigos territoriais**, incluindo
+municipios e unidades especiais; nao interpretar automaticamente esse
+total como quantidade de cidades com votacao. A compatibilidade 2025/2026
+deve ser avaliada na verificacao de cobertura.
+
+### Preparacao inicial (Windows / PowerShell)
+
+```powershell
+# Fluxo Git: revisar feature branch antes de merge
+git fetch origin
+git switch --track origin/feature/geo-ibge-tse-crosswalk
+
+# Testar alteracoes com Makefile
+make test
+
+# Download e preparacao; faz cache dos ZIPs, sem colocar arquivos grandes no Git
+make geo-setup GEO_YEAR=2025
+
+# Cobertura por codigos oficiais: sem inferir municipios por nome
+make geo-check ANO=2026
+
+# Painel com as votacoes ja preparadas, mesmo com o PR defeituoso pendente
+make preview
+
+# Depois de substituir o ZIP invalido do PR e validar todos os brutos
+make run ANO=2026
+```
+
+Se a rede nao permitir downloads, forneca os arquivos baixados por outro
+meio (sem executar Python diretamente):
+
+```powershell
+make geo-setup GEO_YEAR=2025 MALHA="C:/Downloads/BR_Municipios_2025.zip" CROSSWALK="C:/Downloads/municipio_tse_ibge.zip"
+make geo-check ANO=2026
+make preview
+```
+
+Para atualizar a geometria local com outras tolerancias, use
+`make geo-setup GEO_YEAR=2025 FORCE=1 SIMPLIFY_METERS=500`.
+Isso **nao** reprocessa os votos; apenas as referencias espaciais.
+
+- Malha original cacheada: `data/geo/source/BR_Municipios_2025.zip`.
+- Malha simplificada: `data/geo/municipios.geojson` (EPSG:4326).
+- De/para original: `data/reference/source/municipio_tse_ibge.zip`.
+- De/para normalizado: `data/reference/tse_ibge.csv`.
+- Metadados de geografia: `data/geo/official_sources.json`.
+- Verificador: `make geo-check` informa quantas chaves TSE nao encontraram
+  codigo IBGE e quantos codigos IBGE nao encontraram poligono.
+
+**Garantias:** a chave de join e sempre `uf+cd_municipio_tse`; os codigos
+IBGE sao strings de 7 digitos. Se a UF nao existir no CSV do TSE, ela
+e derivada do prefixo oficial de 2 digitos do codigo IBGE. Dados de
+geometria sao tratados com GeoPandas e valores tabulares com Polars;
+nunca ha `to_pandas()` nem `GeoDataFrame.merge(Polars)`.
+
+**Limite geoespacial:** poligonos de municipios nao equivalem a limites
+das zonas eleitorais. O mapa de zonas continuara condicionado a fontes
+cartograficas proprias, e cada zona pode cortar ou compartilhar territorios.
+
 ## Fluxo automatizado de dados brutos: make run
 
 **Regra:** `make run` agora executa `make prepare-data` ANTES de iniciar o Streamlit. A preparacao e incremental: muda apenas arquivos de origem modificados (tamanho/mtime e hash SHA-256 nos manifestos); preserva os ZIPs TSE, processa os CSVs de votacao por secao para o mapa e materializa os 3 datasets `munzona` em arquivos Parquet separados. Isso pode exigir muitos gigabytes de espaco e levar bastante tempo na primeira execucao.
