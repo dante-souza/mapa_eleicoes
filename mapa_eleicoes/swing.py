@@ -104,3 +104,31 @@ def swing_results(
         .otherwise(pl.lit("Neutro")).alias("favorece"),
     )
     return result.sort("delta", descending=True)
+
+
+def state_swing_results(municipal: pl.DataFrame) -> pl.DataFrame:
+    """Um delta por UF a partir de municípios com dois turnos comparáveis.
+
+    Não usa contagem de setas ou média dos deltas: soma os votos/saldos antes
+    de estabelecer a direção da mudança estadual. A cobertura comparável
+    permanece explícita para não insinuar totalização estadual completa.
+    """
+    required = {"uf", "cd_municipio_tse", "saldo_1t", "saldo_2t",
+                "delta", "delta_a", "delta_b"}
+    if municipal.is_empty() or not required.issubset(municipal.columns):
+        return pl.DataFrame()
+    totals = municipal.group_by("uf").agg(
+        pl.col("saldo_1t").sum(),
+        pl.col("saldo_2t").sum(),
+        pl.col("delta").sum(),
+        pl.col("delta_a").sum(),
+        pl.col("delta_b").sum(),
+        pl.col("cd_municipio_tse").n_unique().alias("municipios_comparaveis"),
+    )
+    return totals.with_columns(
+        pl.when((pl.col("saldo_1t") < 0) & (pl.col("saldo_2t") > 0))
+        .then(pl.lit("Para A"))
+        .when((pl.col("saldo_1t") > 0) & (pl.col("saldo_2t") < 0))
+        .then(pl.lit("Para B"))
+        .otherwise(pl.lit("Sem virada")).alias("virada"),
+    ).sort("uf")
