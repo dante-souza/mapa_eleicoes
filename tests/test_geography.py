@@ -130,3 +130,19 @@ def test_cached_zip_no_network(storage, monkeypatch):
     monkeypatch.setattr(geography, "urlopen",
                         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("network")))
     assert geography.download("https://example.com/test.zip", path) == path
+
+
+def test_crosswalk_official_full_column_layout(storage):
+    """Replica a estrutura oficial: horarios, sigla UF, codigos TSE/IBGE."""
+    source = storage / "municipio_tse_ibge.csv"
+    source.write_text(
+        "DT_GERACAO;HH_GERACAO;CD_UF_TSE;CD_UF_IBGE;SG_UF;NM_UF;"
+        "CD_MUNICIPIO_TSE;NM_MUNICIPIO_TSE;CD_MUNICIPIO_IBGE;NM_MUNICIPIO_IBGE\n"
+        "10/05/2026;09:01:10;24;12;AC;Acre;1007;Bujari;1200138;Bujari\n",
+        encoding="utf-8",
+    )
+    cli.crosswalk_import(source)
+    values = pl.read_csv(storage / "reference" / "tse_ibge.csv", infer_schema=False)
+    assert values.row(0, named=True) == {
+        "cd_municipio_tse": "1007", "codigo_ibge": "1200138", "uf": "AC"
+    }
