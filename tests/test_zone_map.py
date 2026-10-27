@@ -7,7 +7,8 @@ import polars as pl
 from shapely.geometry import box
 
 from mapa_eleicoes.vote_gradients import margin_shade
-from mapa_eleicoes.zone_map import zone_layer, zone_results
+from mapa_eleicoes.map_panes import ZoomPanes
+from mapa_eleicoes.zone_map import district_layer, zone_at, zone_layer, zone_results
 
 
 def areas():
@@ -69,3 +70,47 @@ def test_candidate_mode_and_empty_inputs():
     assert count == 2 and "(% v" in render(layer)
     assert zone_layer(areas(), votes().clear()) == (None, 0)
     assert zone_layer(areas().iloc[0:0], votes()) == (None, 0)
+
+
+def districts():
+    return gpd.GeoDataFrame(
+        {
+            "map_id": ["SP:1", "SP:2", "SP:5"],
+            "uf": ["SP"] * 3,
+            "zona": [1, 2, 5],
+            "n_municipios": [1, 1, 1],
+            "municipios_tse": ["71072", "71072", "62910"],
+        },
+        geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1), box(5, 5, 6, 6)],
+        crs="EPSG:4326",
+    )
+
+
+def test_district_layer_sums_whole_zone_and_lists_cities():
+    names = {"SP:71072": "SÃO PAULO", "SP:62910": "CAMPINAS"}
+    layer, count = district_layer(districts(), votes(), names=names, pane="atlasZonasUF")
+    # Zona unica de Campinas tambem entra: no mapa por zona ela e a zona inteira.
+    assert count == 3
+    html = render_with_pane(layer, "atlasZonasUF")
+    assert "Zona 5 (SP)" in html and "CAMPINAS" in html
+    assert '"pane": "atlasZonasUF"' in html
+    assert margin_shade("13", 40) in html
+
+
+def test_selected_zone_gets_solid_outline_others_fade():
+    layer, _ = district_layer(districts(), votes(), highlight_zone=2)
+    html = render(layer)
+    assert '"weight": 3.2' in html and '"fillOpacity": 0.45' in html
+
+
+def test_zone_at_click():
+    assert zone_at(districts(), {"lat": 0.5, "lng": 1.5}) == 2
+    assert zone_at(districts(), {"lat": 3, "lng": 3}) is None
+    assert zone_at(None, {"lat": 0.5, "lng": 0.5}) is None
+
+
+def render_with_pane(layer, pane):
+    fmap = folium.Map(location=[0, 0], prefer_canvas=True)
+    fmap.add_child(ZoomPanes({pane: None}))
+    layer.add_to(fmap)
+    return fmap.get_root().render()

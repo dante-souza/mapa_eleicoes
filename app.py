@@ -21,7 +21,8 @@ from mapa_eleicoes.dashboard_options import round_label, geometry_options
 from mapa_eleicoes.vote_gradients import percentage_shade, margin_shade, legend_html
 from mapa_eleicoes.results import region_results, br_number
 from mapa_eleicoes.vote_sources import combine_sources
-from mapa_eleicoes.interactive_map import render_explorer
+from mapa_eleicoes.interactive_map import PENDING_ZONE, ZONE_DETAIL, render_explorer
+from mapa_eleicoes.zone_map import districts_available
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -83,6 +84,24 @@ def field(geometry: gpd.GeoDataFrame, candidates: list[str]) -> str | None:
     return next((name for name in candidates if name in geometry.columns), None)
 
 
+def attach_ibge(votes: pl.DataFrame) -> pl.DataFrame:
+    """map_id = codigo IBGE do municipio, pelo de/para TSE->IBGE (nunca nome)."""
+    correspondence = crosswalk()
+    if correspondence is None:
+        raise ValueError("A correspondencia territorial TSE/IBGE nao esta disponivel.")
+    keys = ["uf", "cd_municipio_tse", "codigo_ibge"]
+    missing = set(keys) - set(correspondence.columns)
+    if missing:
+        raise ValueError(f"De/para incompleto: {missing}")
+    unique = correspondence.select(keys).unique()
+    conflicts = unique.group_by(["uf", "cd_municipio_tse"]).len().filter(pl.col("len") > 1)
+    if not conflicts.is_empty():
+        raise ValueError("De/para ambiguo: um municipio TSE tem mais de um codigo IBGE.")
+    return votes.join(unique, on=["uf", "cd_municipio_tse"], how="left",
+                      validate="m:1").with_columns(
+                          pl.col("codigo_ibge").fill_null("").alias("map_id"))
+
+
 def shape_for_votes(geometry: gpd.GeoDataFrame, votes: pl.DataFrame, level: str):
     """Atribui chaves geograficas sem cruzar series Polars com GeoPandas."""
     geometry = geometry.copy()
@@ -97,20 +116,7 @@ def shape_for_votes(geometry: gpd.GeoDataFrame, votes: pl.DataFrame, level: str)
         ]
         votes = votes.with_columns(pl.format("{}:{}", pl.col("uf"), pl.col("zona")).alias("map_id"))
     else:
-        correspondence = crosswalk()
-        if correspondence is None:
-            raise ValueError("A correspondencia territorial TSE/IBGE nao esta disponivel.")
-        keys = ["uf", "cd_municipio_tse", "codigo_ibge"]
-        missing = set(keys) - set(correspondence.columns)
-        if missing:
-            raise ValueError(f"De/para incompleto: {missing}")
-        unique = correspondence.select(keys).unique()
-        conflicts = unique.group_by(["uf", "cd_municipio_tse"]).len().filter(pl.col("len") > 1)
-        if not conflicts.is_empty():
-            raise ValueError("De/para ambiguo: um municipio TSE tem mais de um codigo IBGE.")
-        votes = votes.join(unique, on=["uf", "cd_municipio_tse"], how="left",
-                           validate="m:1").with_columns(
-                               pl.col("codigo_ibge").fill_null("").alias("map_id"))
+        votes = attach_ibge(votes)
         code_col = field(geometry, ["CD_MUN", "CD_GEOCMU", "codarea",
                                     "codigo_ibge", "code_muni", "id", "CD_MUN_IBGE"])
         if not code_col:
@@ -134,7 +140,9 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
              selected: str | None, level: str, *,
              year: int, uf: str, cargo: str, turno: int,
              municipality: str, zone: int | str,
-             detail: str, section_ready: bool):
+             detail: str, section_ready: bool,
+             zone_votes: pl.DataFrame | None = None,
+             district_votes: pl.DataFrame | None = None):
     winners = region_results(data, ["map_id"])
     if winners.is_empty():
         st.info("Sem votos nominais para gerar mapa.")
@@ -268,7 +276,8 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         municipio=municipality, zona=zone, mode=mode,
         candidate_number=selected_number, detail=detail,
         section_ready=section_ready and level == "Município",
-        zone_votes=data if level == "Município" else None,
+        zone_votes=zone_votes if level == "Município" else None,
+        district_votes=district_votes if level == "Município" else None,
     )
 
 
@@ -319,6 +328,9 @@ with st.sidebar:
         )
         st.stop()
     votes = votes.filter(pl.col("turno") == turno)
+    # UF inteira, antes de municipio/zona: a zona aproximada completa soma
+    # todos os municipios que ela abrange.
+    votes_uf = votes
     if len(cargos) == 1:
         st.caption(
             f"Para a UF selecionada, apenas {cargos[0]} esta disponivel "
@@ -348,8 +360,17 @@ with st.sidebar:
             (pl.col("uf") == municipality_key[0])
             & (pl.col("cd_municipio_tse") == municipality_key[1])
         )
+    # Votos antes do filtro de zona: as camadas de zona mostram todas as
+    # zonas e destacam a escolhida (como no mapa de apuracao).
+    votes_all_zones = votes
     zones = sorted(votes.get_column("zona").unique().to_list())
-    zone = st.selectbox("Zona", ["Todas"] + zones)
+    pending_zone = st.session_state.pop(PENDING_ZONE, None)
+    if pending_zone is not None and pending_zone in zones:
+        # Zona clicada no mapa por zona preenche o seletor.
+        st.session_state["atlas_zone_select"] = pending_zone
+    if st.session_state.get("atlas_zone_select", "Todas") not in ["Todas"] + zones:
+        st.session_state["atlas_zone_select"] = "Todas"
+    zone = st.selectbox("Zona", ["Todas"] + zones, key="atlas_zone_select")
     if zone != "Todas":
         votes = votes.filter(pl.col("zona") == zone)
     # Sem poligonos cartograficos reais de zonas, a interface sempre
@@ -363,13 +384,21 @@ with st.sidebar:
     # O modo automático sempre começa no mapa nacional/estadual; os
     # pontos das seções aparecem conforme a aproximação pelo mouse.
     levels = ["Automático"] + geometry_options(zone_shape_available)
+    if not zone_shape_available and districts_available(DATA):
+        # Sem malha oficial: zona inteira aproximada (setores IBGE 2022).
+        levels.append(ZONE_DETAIL)
     if section_ready:
         levels.append("Seção eleitoral (locais)")
     level = st.radio("Detalhamento geográfico", levels, index=0)
     if level in ("Automático", "Seção eleitoral (locais)"):
         st.caption(
             "Navegação no próprio mapa: hover mostra resultados; "
-            "clique e zoom revelam os locais de votação."
+            "o zoom revela as zonas e o clique carrega os locais de votação."
+        )
+    elif level == ZONE_DETAIL:
+        st.caption(
+            "Zonas com contorno aproximado (setores IBGE 2022 + locais TSE), "
+            "não oficial. Clique numa zona para selecioná-la."
         )
     if zone != "Todas":
         st.caption(
@@ -439,7 +468,7 @@ with left:
     # Auto e seções preservam a malha municipal como base permanente.
     # Somente o modo de zona explicito usa uma geometria real de zonas.
     effective_level = (
-        "Município" if level in ("Automático", "Seção eleitoral (locais)")
+        "Município" if level in ("Automático", "Seção eleitoral (locais)", ZONE_DETAIL)
         else level
     )
     polygons = load_shape(effective_level)
@@ -464,6 +493,9 @@ with left:
                 year=year, uf=uf, cargo=cargo, turno=turno,
                 municipality=municipality, zone=zone, detail=level,
                 section_ready=section_ready,
+                zone_votes=attach_ibge(votes_all_zones)
+                if effective_level == "Município" else None,
+                district_votes=votes_uf if level == ZONE_DETAIL else None,
             )
         except (ValueError, KeyError, pl.exceptions.PolarsError) as exc:
             st.error(f"Mapa não disponível: {exc}")

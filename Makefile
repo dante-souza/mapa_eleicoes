@@ -147,8 +147,9 @@ prepare-sections: bootstrap
 prepare-locations: bootstrap
 	$(VENV_PY) -m mapa_eleicoes.polling_locations --year $(ANO) $(if $(SECTION_FILE),--file "$(SECTION_FILE)",)
 
-# Areas APROXIMADAS de zona eleitoral dentro do municipio: setores
-# censitarios IBGE 2022 atribuidos a zona com mais secoes nos locais TSE.
+# Areas APROXIMADAS de zona eleitoral (dentro do municipio e zona inteira
+# por UF): setores censitarios IBGE 2022 atribuidos a zona com mais secoes
+# nos locais TSE.
 # Exige locais (prepare-locations) e de/para (geo-setup). Sem SETORES,
 # baixa o ZIP oficial de cada UF do IBGE (com cache). Nao e limite oficial.
 zones-setup: bootstrap

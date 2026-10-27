@@ -5,10 +5,12 @@ import csv
 import io
 import zipfile
 
+import folium
 import polars as pl
 import pytest
 
 from mapa_eleicoes import polling_locations, section_serving, section_map
+from mapa_eleicoes.map_panes import ZoomPanes
 
 
 def build_results(path):
@@ -105,6 +107,14 @@ def test_official_coordinates_align_by_municipio_zona_secao_and_round(tmp_path):
     html = mapa.get_root().render()
     assert "ESCOLA A" in html
     assert "Seção" in html or "Se\\u00e7\\u00e3o" in html
+    assert '"pane"' not in html
+    # No explorador, pontos e agrupamentos vao para o pane que aparece pelo zoom.
+    layer, _, _ = section_map.site_feature_group(rows, sites, pane="atlasLocais")
+    host = folium.Map(location=[0, 0], prefer_canvas=True)
+    host.add_child(ZoomPanes({"atlasLocais": 12}))
+    layer.add_to(host)
+    html = host.get_root().render()
+    assert '"pane": "atlasLocais"' in html and '"clusterPane": "atlasLocais"' in html
 
 
 def test_missing_official_geolocation_keeps_section_in_tabular_results(tmp_path):

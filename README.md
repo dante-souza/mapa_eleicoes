@@ -61,7 +61,7 @@ descartadas, com aviso no painel.
 ## Zonas eleitorais: área aproximada (setores IBGE 2022)
 
 Não existe malha oficial de zonas eleitorais. O Atlas deriva uma **área
-aproximada** da zona dentro de cada município, só com fontes oficiais:
+aproximada** da zona, só com fontes oficiais:
 
 ```
 setores IBGE 2022 (CD_SETOR, CD_MUN)   locais TSE (uf, município, zona, seção, lat/lon)
@@ -73,9 +73,12 @@ setores IBGE 2022 (CD_SETOR, CD_MUN)   locais TSE (uf, município, zona, seção
    local cujo ponto cai em outro município → descartado
    município sem local georreferenciado → sem área (ausência)
                           │
-   união por (UF, município TSE, zona) + simplificação de cobertura (30 m)
+   união por (UF, município TSE, zona) → zonas dentro da cidade
+   união por (UF, zona)                 → zona inteira (vários municípios)
+   + simplificação de cobertura (30 m)
                           │
-   data/geo/zonas/zonas_municipio_UF.geojson + manifest.json (método, hashes)
+   data/geo/zonas/zonas_municipio_UF.geojson
+   data/geo/zonas/zonas_uf_UF.geojson + manifest.json (método, hashes)
 ```
 
 ```bash
@@ -85,10 +88,19 @@ make zones-setup ANO=2026 SETORES=C:/Downloads/BR_setores_CD2022.zip  # arquivo 
 make run ZONES=1 ZONE_UFS=SP           # inclui as zonas no preparo do run
 ```
 
-No modo **Automático**, a partir do zoom de cidade (ou ao clicar num
-município) aparecem as zonas dos municípios visíveis que têm mais de uma
-zona, com as mesmas cores do mapa (líder + diferença em p.p.) e tooltip com
-1º, 2º e diferença. Aproximando mais, surgem os locais de votação. Os
+No modo **Automático**, com uma UF escolhida, as zonas das cidades com
+mais de uma zona aparecem ao aproximar o mapa (sem UF, ao clicar na
+cidade), com as mesmas cores do mapa (líder + diferença em p.p.) e tooltip
+com 1º, 2º e diferença. O clique numa cidade carrega os locais de votação,
+que surgem ao aproximar mais. Tudo isso acontece no navegador: arrastar ou
+dar zoom não recarrega a página.
+
+O detalhamento **Zona eleitoral (aproximada)** (com UF escolhida) pinta a
+zona inteira, somando todos os municípios dela; clicar numa zona a
+seleciona no seletor "Zona" e a destaca com contorno cheio.
+
+Arquivos gerados antes desta versão só têm as zonas dentro da cidade: rode
+`make zones-setup` de novo para criar `zonas_uf_UF.geojson`. Os
 contornos **não são limites oficiais**: cada setor censitário vai inteiro
 para uma zona, e eleitores votam em locais que podem ficar fora do bairro
 onde moram.
