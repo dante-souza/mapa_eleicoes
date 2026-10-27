@@ -18,7 +18,8 @@ def test_focus_wraps_layer_style_and_reacts_to_click_and_zoom():
     html = fmap.get_root().render()
     # Estilo da propria camada: o resetStyle do hover preserva o apagado.
     assert "layer.options.style = styleFor" in html
-    assert 'layer.on("click"' in html and "fitBounds" in html
+    assert 'featureLayer.on("click"' in html and "fitBounds" in html
+    assert 'layer.on("click"' not in html
     assert 'map.on("moveend"' in html
     assert DIM_STYLE["fillColor"] in html
     assert html.index("L.geoJson(") < html.index("styleFor")
@@ -45,3 +46,28 @@ def test_back_control_esc_and_dark_backdrop():
     single = folium.Map(location=[0, 0])
     single.add_child(FocusBackdrop())
     assert '"atlas-focus")' in single.get_root().render()
+
+
+def test_focus_restores_selected_city_after_streamlit_rerun():
+    fmap = folium.Map(location=[0, 0])
+    layer = folium.GeoJson(FC).add_to(fmap)
+    fmap.add_child(CityFocus(layer, initial_focus="3550308"))
+    html = fmap.get_root().render()
+    # O ID persiste no callback Python; a câmera é restaurada no navegador
+    # depois do fitBounds inicial do Folium, não antes.
+    assert "INITIAL_CITY" in html
+    assert '"3550308"' in html
+    assert 'featureLayer.on("click"' in html
+    assert "setFocus(INITIAL_CITY)" in html
+    assert "map.fitBounds(previous.getBounds()" in html
+
+
+def test_focus_does_not_auto_zoom_without_saved_city():
+    fmap = folium.Map(location=[0, 0])
+    layer = folium.GeoJson(FC).add_to(fmap)
+    fmap.add_child(CityFocus(layer))
+    html = fmap.get_root().render()
+    assert "INITIAL_CITY = null" in html
+    assert 'featureLayer.on("click"' in html
+    # Não depende de e.layer (pode estar ausente num clique propagado).
+    assert "idOf(e.layer)" not in html
