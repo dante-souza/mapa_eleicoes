@@ -17,11 +17,10 @@ from streamlit_folium import st_folium
 
 from mapa_eleicoes.geo_bridge import add_properties, ibge_code, zone_code
 from mapa_eleicoes.map_tiles import atlas_map
+from mapa_eleicoes.party_colors import color_for_number, PT_RED, PL_BLUE
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
-COLORS = ["#ff5555", "#6272a4", "#bd93f9", "#50fa7b",
-          "#ffb86c", "#8be9fd", "#f1fa8c", "#ff79c6"]
 TEXT_COLUMNS = ["uf", "cd_municipio_tse", "municipio", "numero",
                 "candidato", "cargo", "tipo_voto"]
 
@@ -135,16 +134,26 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
     if winners.is_empty():
         st.info("Sem votos nominais para gerar mapa.")
         return
-    totals = (
-        data.filter(pl.col("tipo_voto") == "nominal")
-        .group_by("candidato").agg(pl.col("votos").sum())
-        .sort("votos", descending=True)
-    )
-    colors = {candidate: COLORS[i % len(COLORS)]
-              for i, candidate in enumerate(totals.get_column("candidato").to_list())}
+    # Cor do partido extraida de NR_VOTAVEL. Nunca depende do ranking
+    # momentaneo de votos, do nome ou da ordem retornada pelo Polars.
+    selected_number = None
     if mode == "Votação de candidato" and selected:
+        numbers = (
+            data.filter(
+                (pl.col("tipo_voto") == "nominal")
+                & (pl.col("candidato") == selected)
+            )
+            .group_by("numero").agg(pl.col("votos").sum())
+            .sort(["votos", "numero"], descending=[True, False])
+        )
+        if not numbers.is_empty():
+            selected_number = numbers.get_column("numero")[0]
         candidate_votes = (
-            data.filter((pl.col("tipo_voto") == "nominal") & (pl.col("candidato") == selected))
+            data.filter(
+                (pl.col("tipo_voto") == "nominal")
+                & (pl.col("candidato") == selected)
+                & (pl.col("numero") == selected_number)
+            )
             .group_by("map_id").agg(pl.col("votos").sum().alias("votos_candidato"))
         )
         winners = winners.join(candidate_votes, on="map_id", how="left").with_columns(
@@ -192,7 +201,7 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         display["destaque"] = [round(float(value or 0), 2) for value in joined["destaque"]]
     geojson = json.loads(display.to_json(drop_id=True))
     color_by_key = dict(zip(joined["map_id"], [
-        colors.get(name, "#44475a") for name in joined["candidato"]
+        color_for_number(number) for number in joined["numero"]
     ]))
     highlight = dict(zip(joined["map_id"], [
         float(value or 0) for value in joined.get("destaque", [0] * len(joined))
@@ -205,7 +214,7 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         key = feature["properties"]["map_id"]
         intensity = min(1.0, max(0.05, highlight.get(key, 0) / 100.0))
         return {
-            "fillColor": colors.get(selected, "#ff5555") if mode == "Votação de candidato"
+            "fillColor": color_for_number(selected_number) if mode == "Votação de candidato"
                          else color_by_key.get(key, "#44475a"),
             "fillOpacity": 0.15 + 0.8 * intensity if mode == "Votação de candidato" else 0.78,
             "color": "#11111b", "weight": 0.45,
@@ -267,6 +276,11 @@ with st.sidebar:
     if level == "Município" and zone != "Todas":
         st.warning("O limite exibido e municipal, nao da zona selecionada.")
     mode = st.radio("Visualização", ["Vencedor por região", "Votação de candidato"])
+    st.caption(
+        f"Legenda: 🔴 PT (13) · 🔵 PL (22) "
+        "· demais legendas com cores distintas. "
+        "A cor corresponde ao número eleitoral."
+    )
     total_per_candidate = (
         votes.filter(pl.col("tipo_voto") == "nominal")
         .group_by("candidato").agg(pl.col("votos").sum())
