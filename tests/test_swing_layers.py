@@ -26,6 +26,14 @@ def sample():
     return geo
 
 
+def polygon_properties(mapa):
+    """Read native GeoJSON, independent of Folium's Unicode escaping in HTML."""
+    layers = [child for child in mapa._children.values()
+              if isinstance(child, folium.GeoJson)]
+    assert len(layers) == 1
+    return [feature["properties"] for feature in layers[0].data["features"]]
+
+
 def test_two_overlays_are_exclusive_and_tiles_remain_visible():
     mapa = delta_map(sample())
     groups = [c for c in mapa._children.values() if isinstance(c, folium.FeatureGroup)]
@@ -42,7 +50,12 @@ def test_two_overlays_are_exclusive_and_tiles_remain_visible():
     # Somente uma malha de polígonos e uma camada GeoJSON de setas.
     assert html.count("L.geoJson(") == 2
     assert "L.marker(" not in html
-    assert "Sem dados comparáveis" in html
+    props = polygon_properties(mapa)
+    assert len(props) == 2
+    missing = [prop for prop in props if not prop["com_dados"]]
+    assert len(missing) == 1
+    assert missing[0]["regiao"] == "Sem dados comparáveis"
+    assert missing[0]["delta"] == "—"
 
 
 def test_arrow_geometry_is_directional_without_markers():
@@ -61,4 +74,8 @@ def test_missing_vote_does_not_make_arrow():
     mapa = delta_map(geo)
     html = mapa.get_root().render()
     assert html.count("L.geoJson(") == 1
-    assert "Sem dados comparáveis" in html
+    props = polygon_properties(mapa)
+    assert len(props) == 2
+    assert all(prop["regiao"] == "Sem dados comparáveis" for prop in props)
+    assert all(prop["com_dados"] is False for prop in props)
+    assert all(prop["delta"] == "—" for prop in props)
