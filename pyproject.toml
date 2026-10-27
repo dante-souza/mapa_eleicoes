@@ -1,0 +1,8 @@
+[project]
+name = "mapa-eleicoes"
+version = "0.2.0"
+description = "Atlas eleitoral brasileiro de dados abertos do TSE"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
