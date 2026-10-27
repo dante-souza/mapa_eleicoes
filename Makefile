@@ -29,7 +29,8 @@ help:
 	@echo "  make prepare-data ANO=2026 DIR=C:/Downloads   le ZIPs de DIR e processa"
 	@echo "  make data-pack ANO=2026                 gera data/bundles/tse_raw_2026_bundle.zip"
 	@echo "  make data-unpack BUNDLE=arquivo.zip     extrai bundle para data/raw/ANO/"
-	@echo "  make data-scan DIR=C:/Downloads ANO=2026   lista ZIPs encontrados antes de processar"\n\t@echo "  make run ANO=2026 DIR=C:/Downloads     importa, valida e abre Streamlit"
+	@echo "  make data-scan DIR=C:/Downloads ANO=2026   lista ZIPs encontrados antes de processar"
+	@echo "  make run ANO=2026 DIR=C:/Downloads     importa, valida e abre Streamlit"
 	@echo "  make validate / test / doctor / clean-processed"
 
 $(VENV_PY):
