@@ -19,7 +19,7 @@ else
 PYTHON ?= python3
 VENV_PY := .venv/bin/python
 endif
-.PHONY: help bootstrap inspect import import-dir download ingest validate geo-import crosswalk run test doctor clean-processed prepare-data data-pack data-unpack data-scan geo-setup geo-check preview
+.PHONY: help bootstrap inspect import import-dir download ingest validate geo-import crosswalk run test doctor clean-processed prepare-data data-pack data-unpack data-scan geo-setup geo-check preview offices
 help:
 	@echo "Atlas Eleitoral / Make como ponto de entrada"
 	@echo "  make bootstrap                           instala uv + requirements"
@@ -35,6 +35,7 @@ help:
 	@echo "  make geo-setup GEO_YEAR=2025            download oficial IBGE/TSE + normalizacao"
 	@echo "  make geo-setup MALHA=... CROSSWALK=...  importar malha e de/para locais"
 	@echo "  make geo-check ANO=2026                 conferir cobertura geocodigo TSE/IBGE"
+	@echo "  make offices ANO=2026                   listar cargos/turnos e checar BR"
 	@echo "  make preview                            abrir mapa com dados ja processados (parciais)"
 	@echo "  make prepare-data ANO=2026 DIR=C:/Downloads   le ZIPs de DIR e processa"
 	@echo "  make data-pack ANO=2026                 gera data/bundles/tse_raw_2026_bundle.zip"
@@ -83,6 +84,10 @@ geo-setup: bootstrap
 
 geo-check: bootstrap
 	$(VENV_PY) -m mapa_eleicoes.geography check --year $(ANO)
+
+# Relatorio fiel aos CSV.gz locais: lista cargos/turnos/UF e situacao BR.
+offices: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.office_catalog --year $(ANO)
 
 validate: bootstrap
 	$(VENV_PY) -m mapa_eleicoes.cli validate --year $(ANO)
