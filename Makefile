@@ -5,6 +5,8 @@ UF ?=
 FILE ?=
 DIR ?=
 LEVEL ?= municipio
+AUX ?= 1
+BUNDLE ?= data/tse_raw_$(ANO)_bundle.zip
 ifeq ($(OS),Windows_NT)
 PYTHON ?= py -3
 VENV_PY := .venv/Scripts/python.exe
@@ -12,7 +14,7 @@ else
 PYTHON ?= python3
 VENV_PY := .venv/bin/python
 endif
-.PHONY: help bootstrap inspect import import-dir download ingest validate geo-import crosswalk run test doctor clean-processed
+.PHONY: help bootstrap inspect import import-dir download ingest validate geo-import crosswalk run test doctor clean-processed prepare-data data-pack data-unpack
 help:
 	@echo "Atlas Eleitoral / Make como ponto de entrada"
 	@echo "  make bootstrap                           instala uv + requirements"
@@ -24,7 +26,10 @@ help:
 	@echo "  make crosswalk FILE=de_para.csv         importa correspondencia TSE/IBGE"
 	@echo "  make geo-import FILE=malha.gpkg          prepara GeoJSON municipal"
 	@echo "  make geo-import FILE=zonas.geojson LEVEL=zona"
-	@echo "  make run                                 painel Streamlit"
+	@echo "  make prepare-data ANO=2026 [AUX=1]      importa, processa e valida ZIPs da pasta data/"
+	@echo "  make data-pack ANO=2026                 gera data/bundles/tse_raw_2026_bundle.zip"
+	@echo "  make data-unpack BUNDLE=arquivo.zip     extrai bundle para data/raw/ANO/"
+	@echo "  make run ANO=2026 [AUX=1]              prepara TODOS os dados e abre Streamlit"
 	@echo "  make validate / test / doctor / clean-processed"
 
 $(VENV_PY):
@@ -64,7 +69,19 @@ validate: bootstrap
 doctor: bootstrap
 	$(VENV_PY) -m mapa_eleicoes.cli doctor --year $(ANO)
 
-run: bootstrap
+# Preparacao incremental, idempotente: ZIPs por secao -> CSV.gz;
+# agregados munzona -> Parquet tipado como texto (sem perder codigos).
+# Arquivos ausentes nao sao baixados automaticamente.
+prepare-data: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.pipeline prepare --year $(ANO) --aux $(AUX)
+
+data-pack: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.pipeline pack --year $(ANO)
+
+data-unpack: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.pipeline unpack --year $(ANO) --bundle "$(BUNDLE)"
+
+run: prepare-data
 	$(VENV_PY) -m streamlit run app.py
 
 test: bootstrap
