@@ -214,6 +214,7 @@ def _process_aux(path: Path, year: int, chunksize: int = 50000) -> dict:
     if _fresh(metadata, path, result_dir / "part-000001.parquet"):
         print(f"[CACHE AUX] {path.name}")
         return json.loads(metadata.read_text(encoding="utf-8"))
+    result_dir.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{path.stem}-", dir=result_dir.parent))
     rows, parts, columns = 0, 0, None
     try:
