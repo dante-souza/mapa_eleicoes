@@ -572,3 +572,35 @@ requirements.txt        dependências gerenciadas por uv
 - `st.dataframe` suporta Polars diretamente. Para mapas, conversao deliberada para registros Python previne dependencia da conversao Polars↔pandas↔GeoPandas, especialmente com colunas Arrow e nulos.
 
 Criterios de validacao local: `make bootstrap`, `make test`, `make ingest ANO=2026 UF=RR`, `make validate ANO=2026`, `make run`. Confirme valores de votos identicos aos manifestos e teste poligonos municipais e zonas.
+
+
+## Correção pontual — `zones-setup UF=RJ` e GEOS TopologyException
+
+A partir desta correção, `make zones-setup UF=RJ` processa **somente RJ**,
+em vez de percorrer todas as UFs. Também permanece possível executar
+`make zones-setup ZONE_UFS=RJ,SP` para escolher vários estados; quando
+ambas as variáveis forem fornecidas, `ZONE_UFS` tem precedência.
+
+A operação corrige polígonos inválidos dos **setores censitários do IBGE
+2022 antes do dissolve** com `shapely.make_valid`. Se a união ainda falhar
+por conflito topológico, tenta diminuir a precisão dos vértices usando
+0,01 m, 0,1 m e até 1 m no CRS métrico, registrando a ocorrência. Não
+remove setores silenciosamente: geometrias sem área poligonal após o
+reparo ocasionam erro explícito. O procedimento também é aplicado à
+dissolução da zona inteira por UF.
+
+```powershell
+git fetch origin --prune
+git switch --track origin/fix/zones-dissolve-topology-uf-scope-20261027
+make test
+make zones-setup UF=RJ
+# Caso queira retomar especificamente Pernambuco (cuja uniao falhou):
+make zones-setup UF=PE
+# Ou múltiplas UFs:
+make zones-setup ZONE_UFS=RJ,PE
+```
+
+Resultados são **áreas aproximadas de zonas eleitorais**, não os limites
+oficiais do TSE. O pipeline registra as fontes e metadados locais. A
+correção não modifica `app.py`, navegação Folium, paletas ou CSS do mapa.
+
