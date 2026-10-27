@@ -27,11 +27,20 @@ def sample():
 
 
 def polygon_properties(mapa):
-    """Read native GeoJSON, independent of Folium's Unicode escaping in HTML."""
+    """Retorna propriedades municipais, mesmo com camada estadual ativa."""
     layers = [child for child in mapa._children.values()
               if isinstance(child, folium.GeoJson)]
-    assert len(layers) == 1
-    return [feature["properties"] for feature in layers[0].data["features"]]
+    municipal_layers = [
+        layer for layer in layers if any(
+            feature["properties"].get("regiao") == "Cidade 1"
+            for feature in layer.data["features"]
+        )
+    ]
+    if municipal_layers:
+        return [feature["properties"] for feature in municipal_layers[0].data["features"]]
+    # O teste sem votos verifica todas as regiões, sem preferência por nomes.
+    return [feature["properties"] for feature in layers[1].data["features"]]
+
 
 
 def test_two_overlays_are_exclusive_and_tiles_remain_visible():
@@ -44,12 +53,14 @@ def test_two_overlays_are_exclusive_and_tiles_remain_visible():
     html = mapa.get_root().render()
     assert 'map.on("overlayadd"' in html
     assert 'map.on("overlayremove"' in html
-    assert "municipal.setStyle(" in html
-    assert "map.on(\"zoomend\", sync)" in html
-    assert "zoom < low" in html
-    assert "zoom >= high" in html
+    assert "syncPolygon(states, scale === \"state\"" in html
+    assert 'map.on("zoomend moveend resize", sync)' in html
+    assert 'if (zoom < low)' in html
+    assert 'if (zoom >= high && zones)' in html
+    assert "paintArrow(ctx" in html
+    assert "arrowCanvas" in html
     assert "openstreetmap.org" in html
-    # Somente uma malha de polígonos e uma camada GeoJSON de setas.
+    # Duas malhas: estado dissolvido e municípios; setas só em Canvas.
     assert html.count("L.geoJson(") == 2
     assert "L.marker(" not in html
     props = polygon_properties(mapa)
@@ -75,7 +86,7 @@ def test_missing_vote_does_not_make_arrow():
     geo["_vote"] = [None, None]
     mapa = delta_map(geo)
     html = mapa.get_root().render()
-    assert html.count("L.geoJson(") == 1
+    assert html.count("L.geoJson(") == 2
     props = polygon_properties(mapa)
     assert len(props) == 2
     assert all(prop["regiao"] == "Sem dados comparáveis" for prop in props)
@@ -113,14 +124,39 @@ def test_zoom_switches_to_prepared_zones_without_reloading_tiles():
         states=[dict(uf="SP", delta=30, virada="Para A", municipios_comparaveis=2)],
     )
     html = mapa.get_root().render()
-    assert "zoneActive" in html
-    assert "map.on(\"zoomend\", sync)" in html
-    assert "Setas estaduais" in html
-    assert "Setas municipais" in html
-    assert "Setas zonais" in html
+    assert 'if (zoom >= high && zones)' in html
+    assert 'map.on("zoomend moveend resize", sync)' in html
+    assert '"state":' in html
+    assert '"city":' in html
+    assert '"zone":' in html
+    assert 'atlas-swing-arrows' in html
     assert "zonas" not in str(mapa.location)  # inicialização geográfica normal
-    assert html.count("L.geoJson(") == 5
+    assert html.count("L.geoJson(") == 3
     assert "L.marker(" not in html
+
+
+def test_state_boundaries_dissolve_municipal_borders():
+    from mapa_eleicoes.swing_layers import _state_geography
+    report = [dict(uf="SP", delta=30, saldo_1t=-20, saldo_2t=10,
+                   delta_a=40, delta_b=10, virada="Para A",
+                   municipios_comparaveis=2)]
+    grouped = _state_geography(sample(), report)
+    assert len(grouped) == 1
+    assert grouped.iloc[0]["_key"] == "SP"
+    assert abs(grouped.geometry.iloc[0].area - 2.0) < 0.04
+    assert grouped.iloc[0]["_vote"]["delta"] == 30
+
+
+def test_arrows_are_screen_sized_and_preserve_colors():
+    from mapa_eleicoes.swing_layers import _canvas_data
+    assert _canvas_data(sample()) == [[0.5, 0.5, 30]]
+    html = delta_map(sample()).get_root().render()
+    assert 'scale === "state" ? 40' in html
+    assert 'scale === "zone" ? 16' in html
+    assert '"#d60828"' in html and '"#272d97"' in html
+    assert '"#f8f8f2"' in html  # halo de contraste
+    assert "window.devicePixelRatio" in html
+    assert "new Map()" in html  # redução visual de sobreposições
 
 
 def test_original_map_page_runs_as_classic_streamlit_homepage():
