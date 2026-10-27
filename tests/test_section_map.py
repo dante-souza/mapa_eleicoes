@@ -136,3 +136,30 @@ def test_distinct_poll_places_required_for_same_section_round():
     })
     with pytest.raises(ValueError, match="multiplos locais"):
         section_map.section_detail(votes, places)
+
+
+
+def test_conflicting_places_same_section_excluded_from_geocoding(tmp_path):
+    path = tmp_path / "two_places.zip"
+    fields = [
+        "NR_TURNO", "SG_UF", "CD_MUNICIPIO", "NR_ZONA", "NR_SECAO",
+        "NR_LOCAL_VOTACAO", "NM_LOCAL_VOTACAO", "DS_ENDERECO",
+        "NR_LATITUDE", "NR_LONGITUDE",
+    ]
+    rows = [
+        ["1", "RR", "03010", "1", "10", "100", "ESCOLA A", "RUA X", "2.5", "-60.5"],
+        ["1", "RR", "03010", "1", "10", "200", "ESCOLA B", "RUA Y", "2.6", "-60.6"],
+        ["1", "RR", "03010", "1", "11", "100", "ESCOLA A", "RUA X", "2.5", "-60.5"],
+    ]
+    stream = io.StringIO()
+    writer = csv.writer(stream, delimiter=";")
+    writer.writerow(fields)
+    writer.writerows(rows)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("eleitorado_local_votacao_RR.csv",
+                         stream.getvalue().encode("latin-1"))
+    target = tmp_path / "locais.parquet"
+    polling_locations.ingest_location_zip(path, target, chunksize=2)
+    result = pl.read_parquet(target)
+    # Secao 10 tem dois enderecos conflitantes: nao lhe dar um ponto.
+    assert result["secao"].to_list() == [11]
