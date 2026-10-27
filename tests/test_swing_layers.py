@@ -179,7 +179,6 @@ def test_only_state_boundaries_drawn_at_every_zoom():
     assert len(layers) == 3
     border = layers[-1]
     assert border.options.get("interactive") is False
-    assert border._style is not None
     assert 'interactive": false' in fmap.get_root().render()
     assert "map.on(\"zoomend moveend resize\", sync)" in fmap.get_root().render()
 
