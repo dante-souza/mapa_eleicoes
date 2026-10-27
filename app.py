@@ -319,8 +319,20 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         tooltip=folium.GeoJsonTooltip(fields=fields, aliases=aliases, sticky=False),
     ).add_to(map_view)
     if level == "Município" and detail != ZONE_DETAIL and len(geometry) > 1:
-        # Clique/zoom acendem a cidade e apagam as demais (no navegador).
-        map_view.add_child(CityFocus(results_layer))
+        # Clique/zoom acendem a cidade no navegador. Se o Streamlit fizer
+        # rerun para buscar locais, preservar a cidade e o enquadramento.
+        current_scope = (year, uf, cargo, turno, municipality, str(zone), mode, detail)
+        saved_focus = (
+            st.session_state.get("atlas_explorer_focus")
+            if st.session_state.get("atlas_explorer_scope") == current_scope
+            else None
+        )
+        selected_city = (
+            str(saved_focus["city"])
+            if isinstance(saved_focus, dict) and saved_focus.get("city")
+            else None
+        )
+        map_view.add_child(CityFocus(results_layer, initial_focus=selected_city))
     elif single_city:
         # Cidade escolhida no seletor: ja nasce em destaque, fundo escuro.
         map_view.add_child(FocusBackdrop())
