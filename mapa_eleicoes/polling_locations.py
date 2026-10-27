@@ -87,7 +87,10 @@ def ingest_location_zip(source: Path, dest: Path, chunksize: int = 50_000) -> di
             pl.col("zona").cast(pl.Int32, strict=True),
             pl.col("secao").cast(pl.Int32, strict=True),
         )
-        typed.unique(subset=list(JOIN)).write_parquet(
+        # Nao deduplicar antes da conferencia global: a mesma secao
+        # pode aparecer mais de uma vez com locais distintos, e isso
+        # precisa ser detectado, nao resolvido arbitrariamente.
+        typed.write_parquet(
             shards / f"p_{part_id:07d}.parquet"
         )
 
@@ -121,9 +124,25 @@ def ingest_location_zip(source: Path, dest: Path, chunksize: int = 50_000) -> di
         if parts == 0:
             raise ValueError("Arquivo local de votacao sem coordenadas validas")
         lazy = pl.scan_parquet(str(shards / "p_*.parquet"))
-        # Nao soma coordenadas: a chave identifica a secao. Um local pode
-        # receber multiplas secoes; cada uma ganha registro com mesmo ponto.
-        mapped = lazy.unique(subset=list(JOIN), keep="first").sort(list(JOIN))
+        # Havendo coordenadas ou locais conflitantes para a mesma
+        # secao/turno, EXCLUIR o ponto ambiguo. Se nao pudermos saber
+        # a posicao verdadeira, nao escolher "a primeira" arbitrariamente.
+        sites_per_section = (
+            lazy.group_by(list(JOIN)).agg(
+                pl.struct(
+                    ["local", "latitude", "longitude"]
+                ).n_unique().alias("locais_distintos")
+            )
+        )
+        safe_keys = (
+            sites_per_section.filter(pl.col("locais_distintos") == 1)
+            .select(list(JOIN))
+        )
+        mapped = (
+            lazy.join(safe_keys, on=list(JOIN), how="semi")
+            .unique(subset=list(JOIN), keep="first")
+            .sort(list(JOIN))
+        )
         tmp = dest.with_suffix(".part.parquet")
         try:
             mapped.sink_parquet(tmp, compression="zstd")
