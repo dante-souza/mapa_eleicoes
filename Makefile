@@ -6,6 +6,11 @@ FILE ?=
 DIR ?=
 LEVEL ?= municipio
 AUX ?= 1
+GEO_YEAR ?= 2025
+MALHA ?=
+CROSSWALK ?=
+SIMPLIFY_METERS ?= 1000
+FORCE ?= 0
 BUNDLE ?= data/bundles/tse_raw_$(ANO)_bundle.zip
 ifeq ($(OS),Windows_NT)
 PYTHON ?= py -3
@@ -14,7 +19,7 @@ else
 PYTHON ?= python3
 VENV_PY := .venv/bin/python
 endif
-.PHONY: help bootstrap inspect import import-dir download ingest validate geo-import crosswalk run test doctor clean-processed prepare-data data-pack data-unpack data-scan
+.PHONY: help bootstrap inspect import import-dir download ingest validate geo-import crosswalk run test doctor clean-processed prepare-data data-pack data-unpack data-scan geo-setup geo-check preview
 help:
 	@echo "Atlas Eleitoral / Make como ponto de entrada"
 	@echo "  make bootstrap                           instala uv + requirements"
@@ -26,6 +31,10 @@ help:
 	@echo "  make crosswalk FILE=de_para.csv         importa correspondencia TSE/IBGE"
 	@echo "  make geo-import FILE=malha.gpkg          prepara GeoJSON municipal"
 	@echo "  make geo-import FILE=zonas.geojson LEVEL=zona"
+	@echo "  make geo-setup GEO_YEAR=2025            download oficial IBGE/TSE + normalizacao"
+	@echo "  make geo-setup MALHA=... CROSSWALK=...  importar malha e de/para locais"
+	@echo "  make geo-check ANO=2026                 conferir cobertura geocodigo TSE/IBGE"
+	@echo "  make preview                            abrir mapa com dados ja processados (parciais)"
 	@echo "  make prepare-data ANO=2026 DIR=C:/Downloads   le ZIPs de DIR e processa"
 	@echo "  make data-pack ANO=2026                 gera data/bundles/tse_raw_2026_bundle.zip"
 	@echo "  make data-unpack BUNDLE=arquivo.zip     extrai bundle para data/raw/ANO/"
@@ -64,6 +73,14 @@ crosswalk: bootstrap
 geo-import: bootstrap
 	$(VENV_PY) -m mapa_eleicoes.cli geo-import --file "$(FILE)" --level $(LEVEL)
 
+# Operacao pontual, com cache: nao redescarrega 226 MB no make run.
+# MALHA/CROSSWALK podem apontar ZIPs/GeoJSON/CSV baixados manualmente.
+geo-setup: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.geography setup --geo-year $(GEO_YEAR) --simplify-meters $(SIMPLIFY_METERS) $(if $(MALHA),--malha "$(MALHA)",) $(if $(CROSSWALK),--crosswalk "$(CROSSWALK)",) $(if $(filter 1,$(FORCE)),--force,)
+
+geo-check: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.geography check --year $(ANO)
+
 validate: bootstrap
 	$(VENV_PY) -m mapa_eleicoes.cli validate --year $(ANO)
 
@@ -88,6 +105,11 @@ data-unpack: bootstrap
 	$(VENV_PY) -m mapa_eleicoes.pipeline unpack --year $(ANO) --bundle "$(BUNDLE)"
 
 run: prepare-data
+	$(VENV_PY) -m streamlit run app.py
+
+# Preview explicito para explorar processamento parcial (ex.: PR corrompido).
+# Nao altera/manipula dados nem afirma cobertura completa.
+preview: bootstrap
 	$(VENV_PY) -m streamlit run app.py
 
 test: bootstrap
