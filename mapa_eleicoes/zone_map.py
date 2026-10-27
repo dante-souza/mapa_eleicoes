@@ -106,7 +106,7 @@ def _result_layer(
     areas: gpd.GeoDataFrame, results: pl.DataFrame, titles: list[str], *,
     layer_name: str, selected_number: str | None, highlight_zone: int | None,
     pane: str | None, extra: dict[str, tuple[str, list[str]]] | None = None,
-    fill_opacity: float = 0.9,
+    fill_opacity: float = 1.0,
 ) -> folium.FeatureGroup:
     """Poligonos coloridos + tooltip comum as duas camadas de zona."""
     defaults = {

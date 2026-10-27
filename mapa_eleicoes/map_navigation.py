@@ -90,25 +90,3 @@ def focus_for_view(
     if should_render_sites(view.get("zoom"), True):
         return municipality_at(geometry, view.get("center"))
     return None
-
-
-def zoom_for_bounds(
-    bounds: tuple[float, float, float, float],
-    *, width: int = 900, height: int = 700,
-    min_zoom: int = 4, max_zoom: int = 15,
-) -> int:
-    """Maior zoom inteiro (Web Mercator) em que (oeste, sul, leste, norte) cabe."""
-    west, south, east, north = (float(v) for v in bounds)
-    values = (west, south, east, north)
-    if not all(math.isfinite(v) for v in values) or west > east or south > north:
-        return min_zoom
-
-    def mercator_y(lat: float) -> float:
-        lat = max(min(lat, 85.0), -85.0)
-        return math.log(math.tan(math.pi / 4 + math.radians(lat) / 2))
-
-    lon_fraction = max((east - west) / 360.0, 1e-9)
-    lat_fraction = max((mercator_y(north) - mercator_y(south)) / (2 * math.pi), 1e-9)
-    zoom = min(math.log2(width / 256 / lon_fraction),
-               math.log2(height / 256 / lat_fraction))
-    return int(max(min_zoom, min(max_zoom, math.floor(zoom))))

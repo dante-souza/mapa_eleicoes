@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import hashlib
 
-PT_RED = "#ff5555"       # PT / legenda 13 - Dracula red
-PL_BLUE = "#3b82f6"      # PL / legenda 22 - azul bem distinguivel
+PT_RED = "#d60828"       # PT / legenda 13 - vermelho escuro (paleta do g1)
+PL_BLUE = "#272d97"      # PL / legenda 22 - azul escuro (paleta do g1)
 UNKNOWN_COLOR = "#6272a4"
 
 # Paleta reservada a demais legendas: nenhuma recebe o mesmo vermelho

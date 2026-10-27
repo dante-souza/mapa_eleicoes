@@ -22,6 +22,8 @@ from mapa_eleicoes.vote_gradients import percentage_shade, margin_shade, legend_
 from mapa_eleicoes.results import region_results, br_number
 from mapa_eleicoes.vote_sources import combine_sources
 from mapa_eleicoes.interactive_map import PENDING_ZONE, ZONE_DETAIL, render_explorer
+from mapa_eleicoes.map_focus import CityFocus, context_layer
+from mapa_eleicoes.zone_geometry import UF_PREFIX
 from mapa_eleicoes.zone_map import districts_available
 
 ROOT = Path(__file__).resolve().parent
@@ -178,6 +180,7 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         )
 
     keys = set(data.get_column("map_id").drop_nulls().to_list())
+    all_geometry = geometry
     geometry = geometry.loc[geometry["map_id"].isin(keys) & geometry.geometry.notna()].copy()
     if geometry.empty:
         st.warning("Nao foi possivel associar os votos a malha. Revise as chaves.")
@@ -247,8 +250,9 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
                 selected_number, highlight.get(key, 0.0)
             ) if mode == "Votação de candidato"
                          else color_by_key.get(key, "#44475a"),
-            "fillOpacity": 0.86,
-            "color": "#11111b", "weight": 0.45,
+            # Cor cheia e borda escura fina, como no mapa de apuracao do g1.
+            "fillOpacity": 1.0,
+            "color": "#161717", "weight": 0.45,
         }
 
     fields = ["nome_tooltip"]
@@ -261,11 +265,24 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
     if "destaque" in attributes:
         fields.append("destaque")
         aliases.append(f"{escape(str(selected))} (% válidos)")
-    folium.GeoJson(
+    if level == "Município" and uf != "Todas":
+        # Recorte menor que a UF (municipio ou zona escolhidos): o resto da
+        # UF aparece apagado, como no g1, em vez de sumir do mapa.
+        prefix = UF_PREFIX.get(uf, "")
+        rest = all_geometry.loc[
+            [str(code).startswith(prefix) and code not in keys
+             for code in all_geometry["map_id"]]
+        ]
+        if prefix and not rest.empty:
+            context_layer(json.loads(rest[["map_id", "geometry"]].to_json(drop_id=True))).add_to(map_view)
+    results_layer = folium.GeoJson(
         geojson, name="Resultados", style_function=style,
         highlight_function=lambda _: {"weight": 1.5, "color": "#f8f8f2"},
         tooltip=folium.GeoJsonTooltip(fields=fields, aliases=aliases, sticky=False),
     ).add_to(map_view)
+    if level == "Município" and detail != ZONE_DETAIL and len(geometry) > 1:
+        # Clique/zoom acendem a cidade e apagam as demais (no navegador).
+        map_view.add_child(CityFocus(results_layer))
     map_view.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
     map_view.get_root().html.add_child(folium.Element(legend_html(
         "percentual" if mode == "Votação de candidato" else "margem"

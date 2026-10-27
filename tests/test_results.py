@@ -60,7 +60,8 @@ def test_tie_is_explicit_and_single_candidate_has_full_margin():
 
 
 def test_margin_classes_and_colors_keep_party_hue_even_when_close():
-    assert [margin_class(v) for v in (0, 4.9, 5, 9.99, 10, 19.9, 20, 80)] == [0, 0, 1, 1, 2, 2, 3, 3]
+    # Classes do g1: 0-5, 5-20, acima de 20 p.p.
+    assert [margin_class(v) for v in (0, 4.9, 5, 10, 19.9, 20, 80)] == [0, 0, 1, 1, 1, 2, 2]
     assert margin_class(None) is None and margin_class(float("nan")) is None
     assert margin_shade("13", 40) == PT_RED
     assert margin_shade("22", 40) == PL_BLUE
@@ -68,7 +69,12 @@ def test_margin_classes_and_colors_keep_party_hue_even_when_close():
     # Margem apertada ainda separa vermelho de azul pelo matiz dominante.
     assert int(weak_red[1:3], 16) > int(weak_red[5:7], 16)
     assert int(weak_blue[5:7], 16) > int(weak_blue[1:3], 16)
-    assert len({margin_shade("13", v) for v in (1, 7, 15, 40)}) == 4
+    assert [margin_shade("13", v) for v in (1, 7, 40)] == ["#f3b5bf", "#e66b7e", "#d60828"]
+    assert [margin_shade("22", v) for v in (1, 7, 40)] == ["#bec0e0", "#7d81c1", "#272d97"]
+    # Candidato com numero 13xxx (ex.: deputado) usa a mesma paleta da legenda.
+    assert margin_shade("1312", 7) == "#e66b7e"
+    # Demais legendas: tres niveis distintos da cor propria.
+    assert len({margin_shade("45", v) for v in (1, 7, 40)}) == 3
     assert margin_shade("13", 30, tie=True) == TIE
     assert margin_shade("13", None) == NO_DATA
 

@@ -45,8 +45,8 @@ O Atlas utiliza a **mesma paleta estável por número eleitoral** (PT/13 vermelh
 PL/22 azul, demais partidos cores distintas).
 
 - **Vencedor por região:** a cor é a do líder e a intensidade é a
-  **diferença em pontos percentuais para o 2º colocado**, em quatro classes
-  (0–5, 5–10, 10–20 e acima de 20 p.p.). Empate no topo tem cor neutra.
+  **diferença em pontos percentuais para o 2º colocado**, em três classes
+  como no g1 (0–5, 5–20 e acima de 20 p.p.). Empate no topo tem cor neutra.
   No 2º turno o líder sempre tem 50% ou mais; por isso a escala usa a
   margem, e não o percentual do líder, que desperdiçaria metade da escala.
 - **Votação de candidato:** gradiente contínuo de 0% a 100% do candidato.
@@ -248,8 +248,11 @@ make test
 make preview
 ```
 
-**Cores do Atlas, por numero da legenda:** PT / 13 **vermelho**
-(`#ff5555`), PL / 22 **azul** (`#3b82f6`).
+**Cores do Atlas, por numero da legenda:** PT / 13 **vermelho escuro**
+(`#d60828`), PL / 22 **azul escuro** (`#272d97`), na paleta do mapa de
+apuração do g1. No mapa de vencedor há três tons por legenda, um por classe
+de diferença para o 2º colocado (0 a 5, 5 a 20 e acima de 20 p.p.):
+13 = `#f3b5bf` / `#e66b7e` / `#d60828`; 22 = `#bec0e0` / `#7d81c1` / `#272d97`.
 As demais legendas recebem outras cores consistentes entre filtros e
 ordem dos resultados. A fonte atualmente armazenada, `NR_VOTAVEL`,
 é o número do candidato; a regra usa os dois primeiros dígitos para

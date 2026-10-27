@@ -8,9 +8,10 @@ antiga, num ciclo. Agora:
 - tooltips de municipio, zona e local rodam no navegador;
 - zonas e locais ficam em panes que aparecem pelo zoom no navegador
   (mapa_eleicoes.map_panes): municipio -> zona -> local, sem rerun;
-- o clique num municipio faz UM rerun (callback on_change do componente):
-  carrega os locais daquela cidade e enquadra a camera nela. No modo "Zona eleitoral (aproximada)", o clique
-  seleciona a zona, como no mapa de apuracao.
+- o clique num municipio enquadra e destaca a cidade no navegador
+  (mapa_eleicoes.map_focus) e faz UM rerun (callback on_change do
+  componente) so para carregar os locais daquela cidade. No modo "Zona
+  eleitoral (aproximada)", o clique seleciona a zona, como no g1.
 
 O mapa base so muda quando os filtros mudam; entao o componente nao e
 remontado entre cliques. Nenhum poligono de secao e inventado.
@@ -27,7 +28,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from mapa_eleicoes.map_navigation import (
-    ZONE_ZOOM, municipality_at, state_for_municipality, zoom_for_bounds,
+    municipality_at, state_for_municipality,
 )
 from mapa_eleicoes.map_panes import (
     DISTRICT_PANE, SITE_PANE, ZONE_PANE, ClusterAssets, ZoomPanes, explorer_gates,
@@ -71,27 +72,6 @@ def _names(votes: pl.DataFrame | None) -> dict[str, str]:
         for row in votes.select(["uf", "cd_municipio_tse", "municipio"])
         .unique(subset=["uf", "cd_municipio_tse"]).iter_rows(named=True)
     }
-
-
-def city_camera(
-    municipal_shapes: gpd.GeoDataFrame, city: str, *, many_zones: bool,
-) -> dict | None:
-    """Centro e zoom que enquadram o municipio (zonas visiveis se houver)."""
-    rows = municipal_shapes.loc[municipal_shapes["map_id"] == city]
-    if rows.empty or rows.geometry.iloc[0] is None:
-        return None
-    west, south, east, north = (float(v) for v in rows.geometry.iloc[0].bounds)
-    zoom = zoom_for_bounds((west, south, east, north), height=MAP_HEIGHT)
-    if many_zones:
-        zoom = max(zoom, ZONE_ZOOM)
-    return {"city": city, "zoom": zoom,
-            "center": [(south + north) / 2, (west + east) / 2]}
-
-
-def _city_zone_count(zone_votes: pl.DataFrame | None, city: str) -> int:
-    if zone_votes is None or zone_votes.is_empty() or "map_id" not in zone_votes.columns:
-        return 0
-    return zone_votes.filter(pl.col("map_id") == city).get_column("zona").n_unique()
 
 
 def render_explorer(
@@ -197,7 +177,6 @@ def render_explorer(
 
     key_suffix = hashlib.sha256(repr(scope).encode("utf-8")).hexdigest()[:16]
     map_key = f"atlas_explorer_{key_suffix}"
-    camera = focus if focus and municipio == "Todos" else {}
 
     def on_map_change() -> None:
         # Callback roda ANTES do rerun que o clique provoca: o mesmo rerun
@@ -206,7 +185,7 @@ def render_explorer(
             _handle_click(
                 st.session_state.get(map_key), municipal_shapes,
                 districts if district_mode else None,
-                zona=zona, current_city=city, zone_votes=zone_votes,
+                zona=zona, current_city=city,
             )
 
     st_folium(
@@ -219,9 +198,9 @@ def render_explorer(
         # um rerun por movimento (overlay cinza, piscar, camera resetada).
         returned_objects=["last_object_clicked", "last_object_clicked_count"],
         return_on_hover=False,
+        # Sem zoom/center: o enquadramento da cidade clicada e feito no
+        # navegador (map_focus.CityFocus), antes mesmo do rerun.
         feature_group_to_add=dynamic or None,
-        zoom=camera.get("zoom"),
-        center=tuple(camera["center"]) if camera.get("center") else None,
     )
     if drill:
         _captions(zone_count, district_mode, report, city, detail, section_ready,
@@ -281,7 +260,7 @@ def _site_layer(
 def _handle_click(
     response: dict | None, municipal_shapes: gpd.GeoDataFrame,
     districts: gpd.GeoDataFrame | None, *, zona: int | str,
-    current_city: str | None, zone_votes: pl.DataFrame | None,
+    current_city: str | None,
 ) -> None:
     if not response:
         return
@@ -304,12 +283,8 @@ def _handle_click(
     city = municipality_at(municipal_shapes, click)
     if not city or city == current_city:
         return
-    camera = city_camera(
-        municipal_shapes, city,
-        many_zones=_city_zone_count(zone_votes, city) > 1,
-    )
-    if camera is not None:
-        st.session_state["atlas_explorer_focus"] = camera
+    # Cidade em foco no servidor = de onde carregar os locais de votacao.
+    st.session_state["atlas_explorer_focus"] = {"city": city}
 
 
 def _captions(

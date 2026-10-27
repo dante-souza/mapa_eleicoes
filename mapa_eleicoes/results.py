@@ -11,8 +11,9 @@ import polars as pl
 VALID_TYPES = ("nominal", "legenda")
 # Classes de margem (p.p.) entre 1o e 2o colocados, no estilo de mapa de
 # apuracao: limites inferiores inclusivos.
-MARGIN_BREAKS = (5.0, 10.0, 20.0)
-MARGIN_LABELS = ("0 a 5 p.p.", "5 a 10 p.p.", "10 a 20 p.p.", "acima de 20 p.p.")
+# Mesmas classes do mapa de apuracao do g1: 0-5, 5-20 e acima de 20 p.p.
+MARGIN_BREAKS = (5.0, 20.0)
+MARGIN_LABELS = ("0 a 5 p.p.", "5 a 20 p.p.", "acima de 20 p.p.")
 
 RESULT_COLUMNS = [
     "numero_1", "candidato_1", "votos_1", "pct_1",
@@ -79,7 +80,7 @@ def region_results(frame: pl.DataFrame, keys: list[str]) -> pl.DataFrame:
 
 
 def margin_class(margin: object) -> int | None:
-    """0..3 conforme MARGIN_BREAKS; None quando nao ha dado."""
+    """0..2 conforme MARGIN_BREAKS; None quando nao ha dado."""
     try:
         value = float(margin)
     except (TypeError, ValueError):

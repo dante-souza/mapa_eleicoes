@@ -6,15 +6,20 @@ Cores convencionais, sem inferencia sobre preferencias individuais.
 """
 from __future__ import annotations
 
-from mapa_eleicoes.party_colors import color_for_number
+from mapa_eleicoes.party_colors import color_for_number, party_number
 from mapa_eleicoes.results import MARGIN_LABELS, margin_class
 
 PALE = "#e9e6ef"
 NO_DATA = "#44475a"
 TIE = "#a1a1aa"
-# Intensidade por classe de margem: a classe mais fraca ja precisa
-# mostrar o matiz da legenda (vermelho x azul distinguiveis).
-MARGIN_STRENGTHS = (0.42, 0.62, 0.82, 1.0)
+# Paleta discreta do mapa de apuracao do g1 (amostrada da tela), uma cor
+# por classe de margem (0-5, 5-20, >20 p.p.): claro, medio, escuro.
+MARGIN_PALETTES = {
+    "13": ("#f3b5bf", "#e66b7e", "#d60828"),
+    "22": ("#bec0e0", "#7d81c1", "#272d97"),
+}
+# Demais legendas: mesma progressao, misturando o claro com a cor do numero.
+MARGIN_STRENGTHS = (0.35, 0.65, 1.0)
 
 
 def _hex_to_rgb(color: str) -> tuple[int, int, int]:
@@ -61,6 +66,9 @@ def margin_shade(candidate_number: object, margin: object,
     level = margin_class(margin)
     if level is None:
         return NO_DATA
+    palette = MARGIN_PALETTES.get(party_number(candidate_number) or "")
+    if palette:
+        return palette[level]
     return _blend(PALE, color_for_number(candidate_number),
                   MARGIN_STRENGTHS[level])
 
@@ -76,7 +84,7 @@ def _margin_legend() -> str:
         + swatch.format(margin_shade("13", low))
         + swatch.format(margin_shade("22", low))
         + f'<span>{label}</span></div>'
-        for low, label in zip((0, 5, 10, 20), MARGIN_LABELS)
+        for low, label in zip((0, 5, 20), MARGIN_LABELS)
     )
     return (
         '<div style="position:fixed;z-index:9999;right:15px;bottom:28px;'
