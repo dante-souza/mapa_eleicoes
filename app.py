@@ -18,6 +18,7 @@ from streamlit_folium import st_folium
 from mapa_eleicoes.geo_bridge import add_properties, ibge_code, zone_code
 from mapa_eleicoes.map_tiles import atlas_map
 from mapa_eleicoes.party_colors import color_for_number
+from mapa_eleicoes.office_catalog import available_offices, available_turns, preferred_office
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -258,11 +259,25 @@ with st.sidebar:
     uf = st.selectbox("UF", ["Todas"] + uf_opts)
     if uf != "Todas":
         votes = votes.filter(pl.col("uf") == uf)
-    turnos = sorted(votes.get_column("turno").unique().to_list())
+    # O cargo deve vir ANTES do turno: deputados e senadores nao sao
+    # candidatos do segundo turno e nao podem desaparecer do seletor.
+    cargos = available_offices(votes)
+    if not cargos:
+        st.warning("Nao foram encontrados cargos para esta UF. Use make offices ANO=2026.")
+        st.stop()
+    cargo = st.selectbox("Cargo", cargos, index=preferred_office(cargos))
+    votes = votes.filter(pl.col("cargo") == cargo)
+    turnos = available_turns(votes, cargo)
+    if not turnos:
+        st.warning("Cargo selecionado sem turnos. Confira make offices ANO=2026.")
+        st.stop()
     turno = st.selectbox("Turno", turnos)
     votes = votes.filter(pl.col("turno") == turno)
-    cargo = st.selectbox("Cargo", sorted(votes.get_column("cargo").unique().to_list()))
-    votes = votes.filter(pl.col("cargo") == cargo)
+    if len(cargos) == 1:
+        st.caption(
+            f"Apenas {cargos[0]} esta presente para a UF selecionada. "
+            "Confira os arquivos e turnos em make offices ANO=2026."
+        )
     municipality = st.selectbox("Município",
                                 ["Todos"] + sorted(votes.get_column("municipio").unique().to_list()))
     if municipality != "Todos":
