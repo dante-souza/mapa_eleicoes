@@ -1,3 +1,37 @@
+## Correção do comando geográfico e cores eleitorais
+
+O alvo `make geo-import` agora aceita **uso sem `FILE`**, equivalente
+à preparação automática da malha municipal oficial (`geo-setup`, com
+cache e de/para TSE/IBGE). O comportamento manual permanece disponível:
+
+```powershell
+# Fontes municipais oficiais com cache
+make geo-import
+# Mesmo setup com ano explicito
+make geo-import GEO_YEAR=2025
+
+# Malha que voce forneceu
+make geo-import FILE="C:/Downloads/BR_Municipios_2025.zip" LEVEL=municipio
+
+# Limites eleitorais sao OUTRO dataset e exigem arquivo proprio
+make geo-import FILE="C:/Dados/zonas.geojson" LEVEL=zona
+
+# Usar os dados ja processados; nao reprocessa todos os ZIPs do TSE
+make test
+make preview
+```
+
+**Cores do Atlas, por numero da legenda:** PT / 13 **vermelho**
+(`#ff5555`), PL / 22 **azul** (`#3b82f6`).
+As demais legendas recebem outras cores consistentes entre filtros e
+ordem dos resultados. A fonte atualmente armazenada, `NR_VOTAVEL`,
+é o número do candidato; a regra usa os dois primeiros dígitos para
+candidaturas nominais, sem inferir partido por nome ou por posição
+no ranking. Isto é uma convenção visual do Atlas, não uma classificação
+oficial de cores pelo TSE. Em casos especiais/coalizões, validar a
+legenda no dataset oficial de candidaturas.
+
+
 # Atlas Eleitoral — TSE, zonas eleitorais e mapas interativos
 
 Protótipo independente em Python que agrupa votos de **seções → zonas → municípios**, com dados do TSE, **Polars** para dados eleitorais, GeoPandas para preparar geometrias e Folium para navegação no mapa.
