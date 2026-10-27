@@ -14,3 +14,7 @@
 11. **`make run` e ponta a ponta.** Antes de iniciar a interface, executa `make prepare-data`: detecta ZIPs de `data/`, `data/incoming/` ou `data/raw/ANO/`, extrai bundles verificados, agrega arquivos `votacao_secao`, trata `munzona` como datasets independentes em Parquet e valida os votos. Nunca somar o mesmo voto a partir de fontes distintas.
 12. **Resiliência/reprodutibilidade:** nao sobrescrever brutos distintos, guardar SHA-256 e tamanho no manifesto, cachear resultados por origem e versao do pipeline; falhas impedem entrada no dashboard. Bundle gerado por `make data-pack` usa ZIP64 e manifesto; ZIP grande e outros artefatos de dados permanecem fora do Git.
 13. **Geografia nao e automaticamente fabricada:** crosswalk TSE/IBGE e malhas precisam de insumos oficiais separados; faltando geometrias, mostrar ausencia no mapa.
+
+14. **Malha oficial:** `make geo-setup` e `make geo-check` sao os alvos para configurar IBGE 2025 e correspondencia TSE/IBGE, preservando originais, hashes e datas. Nunca usar join por nome; municipio nao e zona eleitoral.
+15. **Preview com cobertura incompleta:** `make preview` apenas abre dados ja processados, sem afirmar cobertura completa e sem esconder falhas do `make run`. Nao altere a exigencia de integridade do preparo dos brutos.
+16. **GeoPandas e Polars isolados:** geometrias no GeoPandas, tabela de correspondencia e calculos no Polars, geocodigos como texto; teste a serializacao GeoJSON e zeros a esquerda.
