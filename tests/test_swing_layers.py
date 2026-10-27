@@ -60,6 +60,8 @@ def test_two_overlays_are_exclusive_and_tiles_remain_visible():
     assert "paintArrow(ctx" in html
     assert "arrowCanvas" in html
     assert "openstreetmap.org" in html
+    assert 'scale === "state"' in html
+    assert 'scale === "city"' in html
     # Duas malhas: estado dissolvido e municípios; setas só em Canvas.
     assert html.count("L.geoJson(") == 2
     assert "L.marker(" not in html
@@ -174,6 +176,6 @@ def test_original_map_page_runs_as_classic_streamlit_homepage():
     assert 'exec(compile(' in homepage
     assert not (root / "atlas.py").exists()
     assert makefile.count("-m streamlit run Atlas_Eleitoral.py") == 2
-    assert 'CityFocus(results_layer)' in app
+    assert 'CityFocus(results_layer, initial_focus=selected_city)' in app
     assert "render_explorer(" in app
     assert (root / "pages" / "1_Deltas_e_viradas.py").is_file()
