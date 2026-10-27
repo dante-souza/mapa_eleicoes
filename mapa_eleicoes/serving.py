@@ -129,7 +129,35 @@ def prepare_serving(year: int, root: Path | None = None) -> dict:
             leftover.unlink()
     geo = data / "geo" / "municipios.geojson"
     crosswalk = data / "reference" / "tse_ibge.csv"
+    expected_ufs = {
+        "AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO",
+        "MA", "MG", "MS", "MT", "PA", "PB", "PE", "PI", "PR",
+        "RJ", "RN", "RO", "RR", "RS", "SC", "SE", "SP", "TO",
+    }
+    present = {
+        name.removeprefix("votos_").removesuffix(".csv.gz")
+        for name in sources
+    }
+    president_rounds = sorted({
+        entry["turno"]
+        for entry in inventory
+        if entry["arquivo"] == "votos_BR.csv.gz"
+        and entry["cargo"].casefold() == "presidente"
+    })
+    coverage = {
+        "ufs_importadas": len(expected_ufs & present),
+        "ufs_esperadas": len(expected_ufs),
+        "ufs_ausentes": sorted(expected_ufs - present),
+        "arquivo_presidencial": "BR" in present,
+        "turnos_presidente": president_rounds,
+        "completo_em_ufs": expected_ufs.issubset(present),
+        "observacao": (
+            "Cobertura de arquivos nao garante totalizacao integral dos votos; "
+            "consultar manifestos e a fonte oficial TSE."
+        ),
+    }
     catalog = {
+        "cobertura": coverage,
         "revisao": SERVE_REV,
         "ano": year,
         "gerado_utc": datetime.now(timezone.utc).isoformat(),
