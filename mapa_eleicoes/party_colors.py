@@ -24,7 +24,7 @@ OTHER_COLORS = (
 def party_number(candidate_number: object) -> str | None:
     """Extrai numero da legenda para voto nominal; nunca infere pelo nome."""
     number = str(candidate_number).strip() if candidate_number is not None else ""
-    if not number.isdecimal() or len(number) < 2:
+    if not number.isascii() or not number.isdigit() or len(number) < 2:
         return None
     return number[:2]
 
