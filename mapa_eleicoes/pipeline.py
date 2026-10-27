@@ -72,21 +72,68 @@ def _safe_copy(source: Path, dest: Path, expected: str | None = None) -> bool:
     return True
 
 
-def import_loose(year: int) -> list[str]:
+def discover_sources(year: int, source_dir: Path | None = None) -> list[Path]:
+    """Localiza ZIPs TSE sem presumir que Downloads ja foi copiado para data/."""
+    roots = [DATA, DATA / "incoming"]
+    if source_dir is not None:
+        source_dir = source_dir.expanduser()
+        if not source_dir.is_dir():
+            raise NotADirectoryError(
+                f"Pasta de origem nao existe: {source_dir}. "
+                "Use DIR=C:/Downloads ou coloque ZIPs em data/incoming/"
+            )
+        roots.append(source_dir)
+    seen: set[Path] = set()
+    discovered: list[Path] = []
+    for root in roots:
+        for source in sorted(root.glob("*.zip")):
+            if not accepted_name(source.name, year):
+                continue
+            key = source.resolve()
+            if key not in seen:
+                seen.add(key)
+                discovered.append(source)
+    return discovered
+
+
+def scan_sources(year: int, source_dir: Path | None = None) -> dict:
+    """Diagnostico rapido: contabiliza brutos em pasta externa e interna."""
+    sources = discover_sources(year, source_dir)
     raw = DATA / "raw" / str(year)
-    sources = list(DATA.glob("*.zip")) + list((DATA / "incoming").glob("*.zip"))
-    imported = []
-    for source in sorted(sources):
-        if not accepted_name(source.name, year):
-            continue
-        cli.ensure_archive(source)
-        dest = raw / source.name
-        if _safe_copy(source, dest):
-            print(f"[STAGE] {source.name} -> {dest}")
-            imported.append(source.name)
-        else:
-            print(f"[CACHE STAGE] {source.name}")
-    return imported
+    staged = sorted(f for f in raw.glob("*.zip") if accepted_name(f.name, year))
+    sections = sorted(f.name for f in sources + staged if is_section(f, year))
+    aux = sorted(f.name for f in sources + staged if is_aux(f, year))
+    print(f"[SOURCE] DIR={source_dir or '(data/, data/incoming/)'}")
+    print(f"[SOURCE] ZIPs reconhecidos na entrada={len(sources)}, "
+          f"secoes={len(sections)}, auxiliares={len(aux)}, em raw={len(staged)}")
+    for path in sources:
+        print(f"[SOURCE] {path} ({path.stat().st_size:,} bytes)")
+    if not sources and not staged:
+        print("[SOURCE] Nenhum ZIP TSE encontrado. Arquivos anexados ao chat "
+              "nao aparecem automaticamente no seu C:/Downloads.")
+        print("[SOURCE] Verifique DIR, nome dos arquivos e extensao .zip.")
+    return {"entrada": len(sources), "raw": len(staged),
+            "secoes": len(sections), "auxiliares": len(aux)}
+
+
+def import_loose(year: int, source_dir: Path | None = None) -> tuple[list[str], list[dict]]:
+    """Copia originais TSE da pasta explicitada por DIR e reporta erro por arquivo."""
+    raw = DATA / "raw" / str(year)
+    imported: list[str] = []
+    errors: list[dict] = []
+    for source in discover_sources(year, source_dir):
+        try:
+            cli.ensure_archive(source)
+            dest = raw / source.name
+            if _safe_copy(source, dest):
+                print(f"[STAGE] {source.name} -> {dest}")
+                imported.append(source.name)
+            else:
+                print(f"[CACHE STAGE] {source.name}")
+        except Exception as exc:
+            print(f"[STAGE ERROR] {source.name}: {exc}")
+            errors.append({"arquivo": source.name, "origem": str(source), "erro": str(exc)})
+    return imported, errors
 
 
 def bundle_path(year: int) -> Path:
@@ -266,10 +313,13 @@ def _process_aux(path: Path, year: int, chunksize: int = 50000) -> dict:
             shutil.rmtree(staging)
 
 
-def prepare(year: int, auxiliary: bool = True) -> dict:
+def prepare(year: int, auxiliary: bool = True, source_dir: Path | None = None) -> dict:
     """Unifica staging, integridade, conversao, manifestos e validacao."""
     incoming = [bundle_path(year), DATA / "incoming" / f"tse_raw_{year}_bundle.zip"]
+    if source_dir is not None:
+        incoming.append(source_dir / f"tse_raw_{year}_bundle.zip")
     errors, sections, aux_done = [], [], []
+    inventory = scan_sources(year, source_dir)
     for bundle in incoming:
         if bundle.exists():
             try:
@@ -277,7 +327,9 @@ def prepare(year: int, auxiliary: bool = True) -> dict:
             except Exception as exc:
                 errors.append({"arquivo": bundle.name, "erro": str(exc)})
     try:
-        import_loose(year)
+        imported, stage_errors = import_loose(year, source_dir)
+        errors.extend(stage_errors)
+        print(f"[STAGE] Copiados={len(imported)}, erros={len(stage_errors)}")
     except Exception as exc:
         errors.append({"etapa": "import", "erro": str(exc)})
     raw = DATA / "raw" / str(year)
@@ -314,7 +366,12 @@ def prepare(year: int, auxiliary: bool = True) -> dict:
         except Exception as exc:
             errors.append({"etapa": "validate", "erro": str(exc)})
     else:
-        errors.append({"etapa": "section", "erro": "Sem ZIP votacao_secao valido; mapa sem dados"})
+        errors.append({
+            "etapa": "section",
+            "erro": "Nenhum ZIP votacao_secao processado. Verifique DIR, nomes e integridade "
+                    "dos arquivos. Use make data-scan DIR=C:/Downloads ANO=2026",
+            "inventario": inventory,
+        })
     summary = {"ano": year, "secoes": sections, "munzona": aux_done,
                "erros": errors, "cobertura": "parcial ate verificacao das UFs e turnos"}
     (output / "prepare_manifest.json").write_text(
@@ -331,6 +388,10 @@ def main(argv: list[str] | None = None) -> None:
     prep = sub.add_parser("prepare")
     prep.add_argument("--year", type=int, default=2026)
     prep.add_argument("--aux", choices=["0", "1"], default="1")
+    prep.add_argument("--source-dir", type=Path, default=None)
+    scan_cmd = sub.add_parser("scan")
+    scan_cmd.add_argument("--year", type=int, default=2026)
+    scan_cmd.add_argument("--source-dir", type=Path, default=None)
     pack_cmd = sub.add_parser("pack")
     pack_cmd.add_argument("--year", type=int, default=2026)
     pack_cmd.add_argument("--output", type=Path)
@@ -339,7 +400,9 @@ def main(argv: list[str] | None = None) -> None:
     unpack_cmd.add_argument("--bundle", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "prepare":
-        prepare(args.year, auxiliary=args.aux == "1")
+        prepare(args.year, auxiliary=args.aux == "1", source_dir=args.source_dir)
+    elif args.command == "scan":
+        scan_sources(args.year, args.source_dir)
     elif args.command == "pack":
         pack(args.year, args.output)
     elif args.command == "unpack":
