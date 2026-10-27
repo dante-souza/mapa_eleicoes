@@ -47,3 +47,57 @@ make preview ANO=2026
 ```
 
 Conferir os dois modos com UF=Todas e com UF selecionada, e também a mudança de modo ao aproximar/afastar e arrastar o mapa.
+
+
+## Navegação hierárquica por zoom (revisão 27/10)
+
+A página principal recebe o nome **Atlas Eleitoral**, não mais "app": o
+entrypoint `atlas.py` define `st.Page("app.py", title="Atlas Eleitoral")`
+e a página "Deltas e viradas". O Makefile continua sendo a **única entrada**
+de execução (`make preview` / `make run`); `app.py` não foi renomeado
+nem teve sua lógica de apuração modificada.
+
+Na visualização **Divisões + setas**, o zoom do Leaflet determina o nível
+das setas sem recarregar o Streamlit:
+
+| Zoom | Setas | Base de cálculo |
+| --- | --- | --- |
+| 0–6 | **Estado: uma seta maior por UF** | Soma dos saldos/votos dos municípios com 1º e 2º turno comparáveis em cada UF |
+| 7–10 | **Municípios** | Delta por município TSE associado ao polígono IBGE por código |
+| 11+ | **Zonas dentro do município** (se preparadas) | Delta por (UF, município TSE, zona) e contornos aproximados do IBGE/TSE |
+
+**Cobertura:** o agregado de UF é calculado sobre municípios com ambos os
+turnos presentes nos Parquets carregados; não representa totalização completa
+quando a cobertura é parcial. Quando o filtro *Somente viradas efetivas*
+estiver ligado, cada nível mostra apenas unidades que efetivamente mudaram
+o sinal do saldo (estado/município/zona), não apenas variações positivas ou
+negativas. Estados, municípios e zonas usam as mesmas fórmulas e cores.
+
+Para evitar picos de memória no mapa nacional, zonas geográficas de todo o
+país **não são carregadas de uma só vez**. O detalhamento por zona é ativado
+automaticamente após selecionar uma UF cujo arquivo
+`data/geo/zonas/zonas_municipio_UF.geojson` exista. Sem esse arquivo,
+o zoom máximo conserva as setas e os limites municipais. Não fabrica
+zonas, polígonos nem centróides de locais de votação.
+
+A visualização alternativa **Áreas por delta (sem setas)** permanece
+disponível no controle Leaflet; no zoom máximo (quando houver geometria de
+zona preparada) o preenchimento passa das áreas municipais para as áreas
+aproximadas das zonas, preservando o contexto dos limites municipais.
+Em zoom afastado o preenchimento permanece municipal; somente as setas
+são agregadas por UF. A direção das setas é simbólica, não movimento de
+eleitores. As setas estaduais são posicionadas sobre um município existente
+próximo ao centro da UF; não se usa `union_all` nem dissolução territorial.
+
+### Validação da alteração
+
+```powershell
+git fetch origin
+git merge --ff-only origin/feature/deltas-viradas-municipio-zona-20261027
+make test
+make preview ANO=2026
+```
+
+Confirmar nome **Atlas Eleitoral** no menu, alternância de camadas,
+escala de setas com zoom (6 → 7 → 11), persistência do enquadramento ao
+aproximar/afastar e fallback municipal em UFs sem geometria de zona.
