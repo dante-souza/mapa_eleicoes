@@ -2,6 +2,71 @@
 
 Protótipo independente em Python que agrupa votos de **seções → zonas → municípios**, com dados do TSE, **Polars** para dados eleitorais, GeoPandas para preparar geometrias e Folium para navegação no mapa.
 
+
+## Fluxo automatizado de dados brutos: make run
+
+**Regra:** `make run` agora executa `make prepare-data` ANTES de iniciar o Streamlit. A preparacao e incremental: muda apenas arquivos de origem modificados (tamanho/mtime e hash SHA-256 nos manifestos); preserva os ZIPs TSE, processa os CSVs de votacao por secao para o mapa e materializa os 3 datasets `munzona` em arquivos Parquet separados. Isso pode exigir muitos gigabytes de espaco e levar bastante tempo na primeira execucao.
+
+### Onde colocar os arquivos
+
+Existem tres opcoes, sem descompactar manualmente os ZIPs individuais:
+
+1. Colocar `votacao_secao_2026_UF.zip` (incluindo `BR`) e os 3 `*munzona_2026.zip` em `data/` ou `data/incoming/`. `make run` os copia para `data/raw/2026/` e processa.
+2. Colocar esses ZIPs diretamente em `data/raw/2026/`, mantendo seus nomes originais.
+3. Colocar `tse_raw_2026_bundle.zip` diretamente em `data/` ou `data/incoming/`. `make run` extrai e valida o manifesto/hash antes de processar.
+
+**Nao versionar nenhum ZIP ou Parquet em Git.** O ZIP consolidado e ZIP64, usa `ZIP_STORED` para nao recomprimir um ZIP e inclui `manifest.json` com checksums. Ele pode ser bem grande.
+
+### Passos no PowerShell
+
+```powershell
+# Repositorio clonado e na branch da PR
+git status -sb
+git fetch origin --prune
+git switch feature/initial-tse-atlas-make-uv
+git merge --ff-only origin/feature/initial-tse-atlas-make-uv
+
+# Quando todos os arquivos originais ja estao no mesmo diretorio
+make bootstrap
+make import-dir DIR="C:/Downloads/TSE" ANO=2026
+make doctor ANO=2026
+
+# Executa TODAS as rotinas e inicia o mapa (equivale a prepare-data + Streamlit)
+make run ANO=2026
+
+# Depois de organizar os brutos, criar o ZIP consolidado localmente
+make data-pack ANO=2026
+# Resultado: data/bundles/tse_raw_2026_bundle.zip
+```
+
+Se os arquivos estiverem em `data/`, **nao e necessario executar import-dir**; basta `make run`.
+
+Para usar o bundle em outro clone do projeto:
+
+```powershell
+# Copiar o bundle para data/tse_raw_2026_bundle.zip
+make data-unpack ANO=2026 BUNDLE="data/tse_raw_2026_bundle.zip"
+make run ANO=2026
+```
+
+### Alvos e politicas
+
+| Alvo | Operacao |
+| --- | --- |
+| `make prepare-data ANO=2026` | staging, leitura ZIPs, secao -> CSV.gz, 3 munzona -> Parquet, verificacao de totais |
+| `make run ANO=2026` | `prepare-data` + Streamlit |
+| `make run ANO=2026 AUX=0` | roda secao/validacao sem criar Parquets gigantes munzona |
+| `make data-pack ANO=2026` | pacote de brutos para transferencia, sem incluir derivados |
+| `make data-unpack ANO=2026 BUNDLE=...zip` | extrai bundle verificando SHA-256 e sem sobrescrever arquivos divergentes |
+| `make validate ANO=2026` | compara votos agregados com seus manifestos |
+| `make doctor ANO=2026` | mostra brutos, saidas e recursos disponiveis |
+
+**Datasets distintos nao sao somados entre si:** `votacao_secao_2026_{UF}.zip` alimenta `data/processed/2026/votos_{UF}.csv.gz`. `votacao_candidato_munzona_2026.zip`, `votacao_partido_munzona_2026.zip` e `detalhe_votacao_munzona_2026.zip` vao para `data/processed/2026/aux/<arquivo>/part-*.parquet`, com todas as colunas inicialmente como texto (schema original preservado). Eles nao entram no denominador dos votos por secao, evitando dupla contagem.
+
+O arquivo `votacao_secao_2026_PR.zip` recebido antes apresentou erro de integridade. **Substitua esse ZIP por uma copia valida.** O `make run` aborta ao detectar bruto corrompido e grava `prepare_manifest.json` com a causa, para nao exibir um mapa que pareca completo sem estar.
+
+**As malhas IBGE e o de/para TSE/IBGE ainda sao dependencias separadas do mapa colorido.** Sem eles, o dashboard abre as tabelas mas nao fabrica os limites das zonas. Use `make geo-import` e `make crosswalk` como documentado abaixo.
+
 ## Contrato operacional
 
 **`make` é o único ponto de entrada**. Não instalar dependências, rodar testes ou executar scripts manualmente fora do Makefile. `make bootstrap` cria `.venv`, instala `uv` via `pip install uv` dentro do ambiente e instala `requirements.txt` com `uv pip install -r requirements.txt`.
@@ -25,7 +90,7 @@ Para muitos estados, repita `make import FILE="..."` e depois rode `make ingest 
 
 TSE: <https://dadosabertos.tse.jus.br/dataset/resultados-2026>. Os ZIPs por estado, `votacao_secao_2026_UF.zip`, incluem cargos estaduais. **Presidente não é incluído necessariamente nesses ZIPs.** Para ele, importe também o ZIP nacional específico: <https://cdn.tse.jus.br/estatistica/sead/odsele/votacao_secao/votacao_secao_2026_BR.zip>. O arquivo `BR` é processado separadamente e marcado com UF real da seção.
 
-Na amostra fornecida, 10 ZIPs estaduais apresentaram CSVs legíveis de 26 colunas (`ANO_ELEICAO`, `NR_TURNO`, `SG_UF`, `CD_MUNICIPIO`, `NM_MUNICIPIO`, `NR_ZONA`, `NR_SECAO`, `CD_CARGO`, `DS_CARGO`, `NR_VOTAVEL`, `NM_VOTAVEL`, `QT_VOTOS` etc.). **O arquivo PR fornecido estava inválido**, com tamanho de cerca de 2 MB. Faça novo download do PR.
+Na primeira amostra fornecida, 10 ZIPs estaduais apresentaram CSVs legíveis de 26 colunas (`ANO_ELEICAO`, `NR_TURNO`, `SG_UF`, `CD_MUNICIPIO`, `NM_MUNICIPIO`, `NR_ZONA`, `NR_SECAO`, `CD_CARGO`, `DS_CARGO`, `NR_VOTAVEL`, `NM_VOTAVEL`, `QT_VOTOS` etc.). **O arquivo PR fornecido estava inválido**, com tamanho de cerca de 2 MB. Faça novo download do PR.
 
 **Atenção:** os arquivos de votação por seção possuem uma linha por candidato/resultado por seção. A soma dos valores de `QT_VOTOS` pode incluir eleições para múltiplos cargos; não representa comparecimento eleitoral único. O painel calcula proporção entre votos nominais do **mesmo cargo e turno**, sem contar brancos e nulos no denominador. Votos do Senado com duas vagas não devem ser interpretados como comparecimento.
 
