@@ -387,7 +387,7 @@ def crosswalk_import(file: Path):
         & pl.col("cd_municipio_tse").str.contains(r"^\d+$")
     ).with_columns(
         pl.col("codigo_ibge").str.slice(0, 2)
-        .replace(IBGE_UF_BY_PREFIX, default=None)
+        .replace_strict(IBGE_UF_BY_PREFIX, default=None)
         .alias("uf_ibge")
     )
     if mapped.is_empty():
