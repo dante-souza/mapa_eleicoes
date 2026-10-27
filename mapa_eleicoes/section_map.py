@@ -202,7 +202,12 @@ def render_site_points(
             f"{site['n_secoes']} seções, {site['total_validos']:,} votos válidos"
             f"<br>Mais votado: {escape(str(site['lider']))} "
             f"({float(site['pct_lider']):.2f}%)"
-            "<hr><table style='width:100%'><tr>"
+            + (
+                f"<br>Votação do número {escape(str(selected_number))}: "
+                f"{float(pct):.2f}% dos votos nominais"
+                if selected_number is not None else ""
+            )
+            + "<hr><table style='width:100%'><tr>"
             "<th>Seção</th><th>Mais votado</th><th>% válidos</th></tr>"
             + entries + "</table>" + more
             + "<p style='font-size:11px'>Ponto do local de votação, "
