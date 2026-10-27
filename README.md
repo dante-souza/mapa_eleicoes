@@ -1,3 +1,58 @@
+# Atlas Eleitoral — Dados prontos para o mapa
+
+**Contrato da aplicacao (outubro/2026):** a interface Streamlit
+consome exclusivamente os **Parquets finais** em
+`data/serving/ANO/votos_*.parquet`. Ela nao baixa dados, nao transforma
+ZIPs e nao exibe instrucoes de terminal para os visitantes.
+
+O comando operacional `make run ANO=2026` agora encadeia:
+1. Sincronizacao oficial seletiva do TSE (`BR` e `PR`), incluindo
+   tentativa diaria de atualizar `BR` quando faltam resultados do 2º turno;
+2. Malha municipal oficial do IBGE e de/para TSE/IBGE em cache;
+3. Ingestao/validacao dos ZIPs TSE, mantendo `munzona` em fluxo distinto;
+4. Materializacao de Parquet Polars e do `catalog.json`, com cobertura
+   de UFs, cargos e turnos efetivamente presentes;
+5. Checagem de chaves geograficas e abertura do Streamlit.
+
+Os dois turnos aparecem no seletor. Quando faltam dados de determinado
+cargo e turno, o painel os identifica como **sem dados**; nao fabrica
+votos. Na ausencia de poligonos reais de zona eleitoral, usa somente
+a malha municipal e permite filtrar votos por zona em tabela/mapa,
+sem chamar limites municipais de zonas.
+
+```powershell
+# Na raiz do repositorio, apos atualizar feature/geo-ibge-tse-crosswalk:
+make test
+make offices ANO=2026
+
+# Atualizar o conjunto oficial nacional inteiro (pode consumir varios GB).
+# ALL=1 verifica cada uma das 28 fontes no maximo uma vez por dia;
+# FORCE=1 obriga verificacao mesmo no mesmo dia.
+make refresh-data ANO=2026 ALL=1
+
+# Prepara completamente dados + geometria + Parquets e abre interface.
+make run ANO=2026
+
+# Caso uma fonte oficial indisponivel impeça o run, inspecionar
+# os resultados locais existentes, sem reimportar brutos corrompidos:
+make preview ANO=2026
+```
+
+`make run SYNC=0` pode ser usado **somente para trabalho local/offline**
+quando a verificacao remota nao for desejada; continua exigindo
+integridade de quaisquer ZIPs que estejam presentes. Se o ZIP do
+Parana ainda estiver ausente e a fonte remota indisponivel, a
+cobertura nao sera considerada nacional. Para recuperar o 2º turno
+presidencial sem atualizar todos os outros estados:
+`make refresh-data ANO=2026 UFS=BR FORCE=1`.
+
+O portal do TSE indica atualizacao de arquivos por secao ao final de
+cada turno; isto **nao garante** que uma copia local ja contenha o
+segundo turno. O catalogo confirma exatamente quais registros existem.
+Fontes de resultados: https://dadosabertos.tse.jus.br/dataset/resultados-2026.
+
+---
+
 ## Correção do comando geográfico e cores eleitorais
 
 O alvo `make geo-import` agora aceita **uso sem `FILE`**, equivalente
