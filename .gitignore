@@ -231,3 +231,9 @@ data/reference/*
 !data/processed/.gitkeep
 !data/geo/.gitkeep
 !data/reference/.gitkeep
+
+# Pacotes locais de dados TSE e staging; nunca versionar ZIPs eleitorais
+data/incoming/
+data/bundles/
+data/*.zip
+data/*.part
