@@ -10,3 +10,7 @@
 8. Testes padrão: `make test` e `make validate`. `make test-offline`/`make ingest-offline` são apenas diagnósticos no sandbox sem rede, não substituem a instalação real por `uv`.
 9. **Motor tabular: Polars.** Nunca introduzir `import pandas` em pipeline, mapa ou testes. GeoPandas (dependencia interna de pandas) e exclusivamente geoespacial.
 10. **Fronteira Polars / GeoPandas:** nao usar `to_pandas()`, `GeoDataFrame.merge(Polars)` ou Arrow dtypes implicitamente. Converter apenas valores finais para registros Python via `geo_bridge.add_properties`. Testar codigo IBGE com zeros, Int64 de votos e serializacao GeoJSON.
+
+11. **`make run` e ponta a ponta.** Antes de iniciar a interface, executa `make prepare-data`: detecta ZIPs de `data/`, `data/incoming/` ou `data/raw/ANO/`, extrai bundles verificados, agrega arquivos `votacao_secao`, trata `munzona` como datasets independentes em Parquet e valida os votos. Nunca somar o mesmo voto a partir de fontes distintas.
+12. **Resiliência/reprodutibilidade:** nao sobrescrever brutos distintos, guardar SHA-256 e tamanho no manifesto, cachear resultados por origem e versao do pipeline; falhas impedem entrada no dashboard. Bundle gerado por `make data-pack` usa ZIP64 e manifesto; ZIP grande e outros artefatos de dados permanecem fora do Git.
+13. **Geografia nao e automaticamente fabricada:** crosswalk TSE/IBGE e malhas precisam de insumos oficiais separados; faltando geometrias, mostrar ausencia no mapa.
