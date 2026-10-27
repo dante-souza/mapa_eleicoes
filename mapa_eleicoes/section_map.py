@@ -14,7 +14,8 @@ import polars as pl
 from folium.plugins import MarkerCluster
 
 from mapa_eleicoes.map_tiles import atlas_map
-from mapa_eleicoes.vote_gradients import percentage_shade, legend_html
+from mapa_eleicoes.results import VALID_TYPES
+from mapa_eleicoes.vote_gradients import percentage_shade, margin_shade, legend_html
 
 KEYS = ["uf", "cd_municipio_tse", "zona", "secao", "turno"]
 
@@ -65,8 +66,8 @@ def section_detail(
 ) -> tuple[pl.DataFrame, pl.DataFrame, int]:
     """Retorna (secoes com percentuais, locais consolidados, sem coordenada).
 
-    Votos validos nominais sao o denominador; branco, nulo e legenda
-    nao sao somados como validos de candidato.
+    Votos validos (nominais + legenda) sao o denominador, como na
+    totalizacao oficial; branco e nulo ficam fora.
     """
     if votes.is_empty():
         return pl.DataFrame(), pl.DataFrame(), 0
@@ -85,8 +86,9 @@ def section_detail(
     candidates = nominal.group_by(KEYS + ["numero", "candidato"]).agg(
         pl.col("votos").sum()
     )
-    totals = candidates.group_by(KEYS).agg(
-        pl.col("votos").sum().alias("total_validos")
+    totals = (
+        votes.filter(pl.col("tipo_voto").is_in(VALID_TYPES))
+        .group_by(KEYS).agg(pl.col("votos").sum().alias("total_validos"))
     )
     scored = candidates.join(totals, on=KEYS, how="left").with_columns(
         (pl.col("votos") * 100.0 / pl.col("total_validos")).alias("pct")
@@ -131,15 +133,31 @@ def section_detail(
         .join(sites.select(group + ["total_validos"]), on=group, how="inner")
         .with_columns((pl.col("votos") * 100.0 / pl.col("total_validos")).alias("pct"))
     )
-    best = (
+    ranked = (
         site_candidate.sort(group + ["votos", "numero"],
                             descending=[False] * len(group) + [True, False])
-        .unique(subset=group, keep="first", maintain_order=True)
+        .with_columns(pl.int_range(pl.len()).over(group).alias("posicao"))
+    )
+    runner_up = ranked.filter(pl.col("posicao") == 1).select(
+        group + [pl.col("pct").alias("pct_segundo"),
+                 pl.col("votos").alias("votos_segundo")]
+    )
+    best = (
+        ranked.filter(pl.col("posicao") == 0)
         .select(group + [
             pl.col("numero").alias("numero_lider"),
             pl.col("candidato").alias("lider"),
             pl.col("pct").alias("pct_lider"),
+            pl.col("votos").alias("votos_lider_local"),
         ])
+        .join(runner_up, on=group, how="left")
+        .with_columns(
+            (pl.col("pct_lider") - pl.col("pct_segundo").fill_null(0.0))
+            .alias("margem_pp"),
+            (pl.col("votos_lider_local") == pl.col("votos_segundo"))
+            .fill_null(False).alias("empate"),
+        )
+        .drop(["votos_lider_local", "votos_segundo"])
     )
     sites = sites.join(best, on=group, how="left")
     if selected_number is not None:
@@ -181,8 +199,15 @@ def render_site_points(
             site.get("pct_selecionado", 0.0)
             if selected_number is not None else site["pct_lider"]
         )
-        number = selected_number or site["numero_lider"]
-        color = percentage_shade(number, pct)
+        if selected_number is not None:
+            color = percentage_shade(selected_number, pct)
+        else:
+            # Mesmo criterio do mapa municipal: cor do lider, intensidade
+            # pela diferenca em p.p. para o 2o colocado do local.
+            color = margin_shade(
+                site["numero_lider"], site.get("margem_pp"),
+                bool(site.get("empate")),
+            )
         entries = "".join(
             "<tr>"
             f"<td>{int(row['secao'])}</td>"
@@ -202,10 +227,14 @@ def render_site_points(
             f"Local {escape(str(site['local']))} — "
             f"{site['n_secoes']} seções, {site['total_validos']:,} votos válidos"
             f"<br>Mais votado: {escape(str(site['lider']))} "
-            f"({float(site['pct_lider']):.2f}%)"
+            f"({float(site['pct_lider']):.2f}% dos válidos)"
+            + (
+                "<br>Empate no topo" if site.get("empate") else
+                f"<br>Diferença para o 2º: {float(site.get('margem_pp') or 0):.1f} p.p."
+            )
             + (
                 f"<br>Votação do número {escape(str(selected_number))}: "
-                f"{float(pct):.2f}% dos votos nominais"
+                f"{float(pct):.2f}% dos votos válidos"
                 if selected_number is not None else ""
             )
             + "<hr><table style='width:100%'><tr>"
@@ -219,11 +248,15 @@ def render_site_points(
             radius=7, fill=True, color="#f8f8f2", weight=0.5,
             fill_color=color, fill_opacity=0.92,
             popup=folium.Popup(body, max_width=420),
-            tooltip=f"{heading} · {int(site['n_secoes'])} seções · {float(pct):.1f}%",
+            tooltip=(
+                f"{heading} · {int(site['n_secoes'])} seções · "
+                + (f"{float(pct):.1f}%" if selected_number is not None else
+                   f"{escape(str(site['lider']))} {float(pct):.1f}%")
+            ),
         ).add_to(cluster)
-    mapa.get_root().html.add_child(
-        folium.Element(legend_html("percentual"))
-    )
+    mapa.get_root().html.add_child(folium.Element(legend_html(
+        "percentual" if selected_number is not None else "margem"
+    )))
     if len(sites):
         lat_min, lat_max = sites["latitude"].min(), sites["latitude"].max()
         lon_min, lon_max = sites["longitude"].min(), sites["longitude"].max()

@@ -17,7 +17,8 @@ UNKNOWN_COLOR = "#6272a4"
 # ou azul de PT e PL. Indice estavel independente do numero de votos.
 OTHER_COLORS = (
     "#bd93f9", "#50fa7b", "#ffb86c", "#8be9fd",
-    "#f1fa8c", "#ff79c6", "#94a3b8", "#c4b5fd",
+    # Sem rosa nem lilas: tons claros desses se confundiam com PT/PL fracos.
+    "#f1fa8c", "#2dd4bf", "#94a3b8", "#d4a373",
 )
 
 
