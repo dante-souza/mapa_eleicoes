@@ -1,6 +1,6 @@
 import polars as pl
 import pytest
-from mapa_eleicoes.swing import swing_results
+from mapa_eleicoes.swing import swing_results, state_swing_results
 
 def sample():
     rows=[]
@@ -27,3 +27,22 @@ def test_missing_round_is_not_zero():
     assert swing_results(frame).height==1
     with pytest.raises(ValueError):
         swing_results(sample().filter(pl.col("turno")==1))
+
+
+def test_state_delta_sums_balances_not_majority_of_municipal_arrows():
+    # Dois municípios comparáveis na mesma UF; ambos precisam contribuir
+    # com seus votos/saldos, independentemente do sentido individual.
+    state = state_swing_results(swing_results(sample()))
+    assert state.height == 1
+    record = state.to_dicts()[0]
+    assert record["uf"] == "SP"
+    assert record["saldo_1t"] == (-20 + 80)
+    assert record["saldo_2t"] == (10 + 70)
+    assert record["delta"] == 20
+    assert record["delta"] == record["delta_a"] - record["delta_b"]
+    assert record["municipios_comparaveis"] == 2
+    assert record["virada"] == "Sem virada"
+
+
+def test_no_fabricated_state_on_empty_frame():
+    assert state_swing_results(pl.DataFrame()).is_empty()
