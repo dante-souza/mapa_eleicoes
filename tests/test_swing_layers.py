@@ -179,8 +179,15 @@ def test_only_state_boundaries_drawn_at_every_zoom():
     assert len(layers) == 3
     border = layers[-1]
     assert border.options.get("interactive") is False
-    assert 'interactive": false' in fmap.get_root().render()
-    assert "map.on(\"zoomend moveend resize\", sync)" in fmap.get_root().render()
+    assert not any(isinstance(x, folium.GeoJsonTooltip) for x in border._children.values())
+    # Hover municipal permanece disponível mesmo sem stroke/cartografia interna.
+    assert any(isinstance(x, folium.GeoJsonTooltip)
+               for x in layers[1]._children.values())
+    html = fmap.get_root().render()
+    assert 'interactive": false' in html
+    assert '"stroke": false' in html
+    assert 'border.eachLayer(function(path)' in html
+    assert "map.on(\"zoomend moveend resize\", sync)" in html
 
 
 def test_state_border_ignores_internal_holes_from_simplified_municipalities():
