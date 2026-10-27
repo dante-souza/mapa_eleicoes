@@ -8,7 +8,7 @@ from mapa_eleicoes.swing_layers import _arrow_geometry, delta_map
 
 def sample():
     geo = gpd.GeoDataFrame(
-        {"_key": ["1000001", "1000002"]},
+        {"_key": ["3550308", "3509502"]},
         geometry=[
             Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
             Polygon([(1, 0), (2, 0), (2, 1), (1, 1)]),
@@ -44,8 +44,10 @@ def test_two_overlays_are_exclusive_and_tiles_remain_visible():
     html = mapa.get_root().render()
     assert 'map.on("overlayadd"' in html
     assert 'map.on("overlayremove"' in html
-    assert "polygons.setStyle(filledStyle)" in html
-    assert "polygons.setStyle(outlineStyle)" in html
+    assert "municipal.setStyle(" in html
+    assert "map.on(\"zoomend\", sync)" in html
+    assert "zoom < low" in html
+    assert "zoom >= high" in html
     assert "openstreetmap.org" in html
     # Somente uma malha de polígonos e uma camada GeoJSON de setas.
     assert html.count("L.geoJson(") == 2
@@ -79,3 +81,53 @@ def test_missing_vote_does_not_make_arrow():
     assert all(prop["regiao"] == "Sem dados comparáveis" for prop in props)
     assert all(prop["com_dados"] is False for prop in props)
     assert all(prop["delta"] == "—" for prop in props)
+
+
+def test_state_arrow_is_aggregated_one_per_uf():
+    from mapa_eleicoes.swing_layers import _state_arrows
+    frame = sample()
+    report = [
+        dict(uf="SP", delta=30, virada="Para A", municipios_comparaveis=2),
+    ]
+    features = _state_arrows(frame, report)["features"]
+    assert len(features) == 1
+    assert features[0]["properties"]["regiao"].startswith("UF SP")
+    assert features[0]["properties"]["delta"] == "+30"
+    # Nenhuma seta adicional para município sem votos do 2º turno.
+    assert features[0]["geometry"]["type"] == "MultiLineString"
+
+
+def test_zoom_switches_to_prepared_zones_without_reloading_tiles():
+    zone = gpd.GeoDataFrame(
+        {"_key": ["SP:100:1"]},
+        geometry=[Polygon([(0, 0), (.5, 0), (.5, .5), (0, .5)])],
+        crs="EPSG:4326",
+    )
+    zone["_vote"] = [{
+        "uf": "SP", "municipio": "Cidade 1", "zona": 1, "delta": -10,
+        "saldo_1t": 20, "saldo_2t": 10, "delta_a": 0,
+        "delta_b": 10, "virada": "Sem virada",
+    }]
+    mapa = delta_map(
+        sample(), zones=zone,
+        states=[dict(uf="SP", delta=30, virada="Para A", municipios_comparaveis=2)],
+    )
+    html = mapa.get_root().render()
+    assert "zoneActive" in html
+    assert "map.on(\"zoomend\", sync)" in html
+    assert "Setas estaduais" in html
+    assert "Setas municipais" in html
+    assert "Setas zonais" in html
+    assert "zonas" not in str(mapa.location)  # inicialização geográfica normal
+    assert html.count("L.geoJson(") == 5
+    assert "L.marker(" not in html
+
+
+def test_navigation_labels_main_page_without_renaming_existing_app():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    router = (root / "atlas.py").read_text(encoding="utf-8")
+    makefile = (root / "Makefile").read_text(encoding="utf-8")
+    assert 'st.Page("app.py", title="Atlas Eleitoral"' in router
+    assert 'st.Page("pages/1_Deltas_e_viradas.py", title="Deltas e viradas"' in router
+    assert makefile.count("-m streamlit run atlas.py") == 2
