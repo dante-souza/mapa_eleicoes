@@ -1,3 +1,44 @@
+# Explorador automático — navegação diretamente no mapa
+
+O Atlas agora começa sempre com uma malha geográfica **visível**, mesmo
+quando há resultados por seção eleitoral disponíveis. A antiga exigência
+de selecionar UF e município antes de mostrar o mapa foi removida.
+
+Inspirado na navegação interativa por mapa, mas com código próprio:
+- **Hover:** o tooltip de município mostra os dados no navegador,
+  sem fazer rerun do Streamlit a cada movimento do mouse;
+- **Clique sobre polígono municipal:** aproxima diretamente a cidade
+  identificada pelo polígono IBGE real;
+- **Scroll/zoom:** em nível urbano (zoom 10 ou maior) o centro do viewport
+  determina o município em foco, e o Atlas consulta automaticamente
+  os Parquets por seção da sua UF e os locais georreferenciados do TSE;
+- **Locais:** pontos agrupados por local de votação, com popup detalhando
+  seções e porcentagens. Os pontos não representam limites territoriais;
+- **Controles:** filtros UF, município, cargo, turno e zona seguem
+  disponíveis; o modo inicial **Automático** não exige uso deles.
+  `Município` e `Seção eleitoral (locais)` continuam como opções.
+
+O mapa preserva zoom e centro durante as interações e limita a
+consulta de pontos ao município focado. Nenhum download de dados é
+disparado pelo próprio Streamlit; para preparar tudo antes da
+interface, use o Makefile.
+
+```powershell
+git status -sb
+git fetch origin --prune
+git switch feature/geo-ibge-tse-crosswalk
+git merge --ff-only origin/feature/geo-ibge-tse-crosswalk
+make test
+# Dados e locais ja preparados podem ser visualizados diretamente:
+make preview ANO=2026
+# Fluxo integral: importacao, malhas, secoes e Streamlit:
+make run ANO=2026
+```
+
+A navegação do G1 é referência conceitual, não dependência:
+https://g1.globo.com/politica/eleicoes/2026/mapas/mapa-de-apuracao/presidente/brasil.ghtml
+
+---
 # Gradiente eleitoral e detalhamento por seção (2026)
 
 O Atlas utiliza a **mesma paleta estável por número eleitoral** (PT/13 vermelho,
