@@ -91,7 +91,7 @@ def shape_for_votes(geometry: gpd.GeoDataFrame, votes: pl.DataFrame, level: str)
     else:
         correspondence = crosswalk()
         if correspondence is None:
-            raise ValueError("Falta data/reference/tse_ibge.csv (make crosswalk).")
+            raise ValueError("A correspondencia territorial TSE/IBGE nao esta disponivel.")
         keys = ["uf", "cd_municipio_tse", "codigo_ibge"]
         missing = set(keys) - set(correspondence.columns)
         if missing:
@@ -286,8 +286,8 @@ with st.sidebar:
     votes = votes.filter(pl.col("turno") == turno)
     if len(cargos) == 1:
         st.caption(
-            f"Apenas {cargos[0]} esta presente para a UF selecionada. "
-            "Confira os arquivos e turnos em make offices ANO=2026."
+            f"Para a UF selecionada, apenas {cargos[0]} esta disponivel "
+            "no conjunto carregado."
         )
     municipality = st.selectbox("Município",
                                 ["Todos"] + sorted(votes.get_column("municipio").unique().to_list()))
