@@ -8,10 +8,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 from html import escape
+import json
 from math import sqrt
 
 import folium
 import geopandas as gpd
+import shapely
 from branca.element import MacroElement
 from jinja2 import Template
 
@@ -28,90 +30,164 @@ ZONE_MIN_ZOOM = 11     # zoom >= 11: zonas, quando há geometria preparada
 
 
 class DeltaZoomLayers(MacroElement):
-    """Exclusividade dos modos e zoom hierárquico, sem rerun do Streamlit."""
+    """Escalas territoriais exclusivas e setas Canvas em pixels da tela.
+
+    Tudo roda no Leaflet. Não publica eventos de zoom para Streamlit e não
+    interfere no mapa principal de apuração.
+    """
 
     _template = Template("""
     {% macro script(this, kwargs) %}
-    (function(map, outlines, filled, municipal, zones,
-              stateArrows, cityArrows, zoneArrows, low, high) {
-        var mode = "arrows";
-        function transparent(feature) {
-            return {fillColor: "#6272a4", fillOpacity: 0,
-                    color: "#a6a6b5", weight: 0.75};
+    (function(map, outlines, filled, states, cities, zones, data, low, high) {
+        var arrowCanvas = L.DomUtil.create("canvas", "atlas-swing-arrows",
+                                            map.getPanes().overlayPane);
+        arrowCanvas.style.cssText = "position:absolute;pointer-events:none;z-index:430;";
+        var ratio = Math.min(window.devicePixelRatio || 1, 2);
+        var lastMode = null;
+
+        function transparent(layer, level) {
+            return {
+                fillOpacity: 0,
+                color: level === "state" ? "#e0e0e8" : "#a6a6b5",
+                weight: level === "state" ? 1.5 : 0.8
+            };
         }
-        function painted(feature) {
-            return {fillColor: feature.properties.cor,
-                    fillOpacity: feature.properties.com_dados ? 0.72 : 0,
-                    color: "#161717", weight: 0.48};
+        function painted(feature, level) {
+            return {
+                fillColor: feature.properties.cor,
+                fillOpacity: feature.properties.com_dados ? 0.72 : 0,
+                color: level === "state" ? "#d8d8df" : "#181820",
+                weight: level === "state" ? 1.5 : 0.55
+            };
         }
-        function toggle(group, child, active) {
-            if (!child) { return; }
-            if (active && !group.hasLayer(child)) { group.addLayer(child); }
-            else if (!active && group.hasLayer(child)) { group.removeLayer(child); }
+        function syncPolygon(layer, visible, level, colored) {
+            if (!layer) { return; }
+            if (visible && !map.hasLayer(layer)) { map.addLayer(layer); }
+            if (!visible && map.hasLayer(layer)) { map.removeLayer(layer); }
+            if (visible) {
+                layer.setStyle(function(f) {
+                    return colored ? painted(f, level) : transparent(f, level);
+                });
+            }
+        }
+        function scaleForZoom() {
+            var zoom = map.getZoom();
+            if (zoom < low) { return "state"; }
+            if (zoom >= high && zones) { return "zone"; }
+            return "city";
+        }
+        function paintArrow(ctx, x, y, delta, magnitude, scale) {
+            var direction = delta > 0 ? -1 : 1;
+            var relative = Math.sqrt(magnitude);
+            var len = (scale === "state" ? 40 : scale === "zone" ? 16 : 21) +
+                      (scale === "state" ? 28 : scale === "zone" ? 11 : 16) * relative;
+            var lineWidth = scale === "state" ? 4.6 : scale === "zone" ? 2.4 : 3.0;
+            var dx = direction * len * 0.72, dy = -len * 0.72;
+            var tipX = x + dx, tipY = y + dy;
+            var head = len * 0.32;
+            var angle = Math.atan2(dy, dx);
+            function shape() {
+                ctx.beginPath();
+                ctx.moveTo(x, y);
+                ctx.lineTo(tipX, tipY);
+                ctx.lineTo(tipX - head * Math.cos(angle - Math.PI / 6),
+                           tipY - head * Math.sin(angle - Math.PI / 6));
+                ctx.moveTo(tipX, tipY);
+                ctx.lineTo(tipX - head * Math.cos(angle + Math.PI / 6),
+                           tipY - head * Math.sin(angle + Math.PI / 6));
+                ctx.stroke();
+            }
+            ctx.lineCap = "round";
+            ctx.lineJoin = "round";
+            // Halo escuro para contraste tanto sobre a base quanto sobre o
+            // preenchimento, sem alterar o vermelho/azul do Atlas.
+            ctx.strokeStyle = "#14141b";
+            ctx.lineWidth = lineWidth + 3.3;
+            shape();
+            ctx.strokeStyle = delta > 0 ? "#d60828" : "#272d97";
+            ctx.lineWidth = lineWidth;
+            shape();
+        }
+        function redraw() {
+            var size = map.getSize();
+            var topLeft = map.containerPointToLayerPoint([0, 0]);
+            arrowCanvas.style.left = topLeft.x + "px";
+            arrowCanvas.style.top = topLeft.y + "px";
+            arrowCanvas.style.width = size.x + "px";
+            arrowCanvas.style.height = size.y + "px";
+            arrowCanvas.width = Math.round(size.x * ratio);
+            arrowCanvas.height = Math.round(size.y * ratio);
+            var ctx = arrowCanvas.getContext("2d");
+            ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+            if (!map.hasLayer(outlines)) { return; }
+            var scale = scaleForZoom();
+            var items = data[scale] || [];
+            var maximum = 1;
+            items.forEach(function(row) {
+                maximum = Math.max(maximum, Math.abs(row[2]));
+            });
+            // Em áreas muito densas, prioriza a maior magnitude dentro de
+            // cada célula visual, sem modificar cálculos ou dados oficiais.
+            var cell = scale === "state" ? 9 : scale === "zone" ? 16 : 21;
+            var visible = new Map();
+            items.forEach(function(row) {
+                if (!row[2]) { return; }
+                var point = map.latLngToContainerPoint([row[0], row[1]]);
+                if (point.x < -85 || point.y < -85 ||
+                    point.x > size.x + 85 || point.y > size.y + 85) { return; }
+                var key = Math.floor(point.x / cell) + ":" +
+                          Math.floor(point.y / cell);
+                var previous = visible.get(key);
+                if (!previous || Math.abs(row[2]) > Math.abs(previous.delta)) {
+                    visible.set(key, {x: point.x, y: point.y, delta: row[2]});
+                }
+            });
+            visible.forEach(function(item) {
+                paintArrow(ctx, item.x, item.y, item.delta,
+                           Math.abs(item.delta) / maximum, scale);
+            });
         }
         function sync() {
-            var zoom = map.getZoom();
-            var filledActive = map.hasLayer(filled);
-            var arrowsActive = map.hasLayer(outlines);
-            var zoneActive = !!zones && zoom >= high;
-            // Não sacrificar informação municipal onde não há zonas preparadas.
-            var municipalVisible = filledActive || zoom >= low;
-            if (municipalVisible && !map.hasLayer(municipal)) {
-                map.addLayer(municipal);
-            } else if (!municipalVisible && map.hasLayer(municipal)) {
-                map.removeLayer(municipal);
-            }
-            if (zones) {
-                if (zoneActive && !map.hasLayer(zones)) { map.addLayer(zones); }
-                else if (!zoneActive && map.hasLayer(zones)) { map.removeLayer(zones); }
-                zones.setStyle(filledActive ? painted : transparent);
-            }
-            // No zoom de zonas, manter contorno municipal, sem preencher.
-            municipal.setStyle(filledActive && !zoneActive ? painted : transparent);
-            var scale = zoom < low ? "state" :
-                       (zoneActive && zoneArrows ? "zone" : "city");
-            toggle(outlines, stateArrows, arrowsActive && scale === "state");
-            toggle(outlines, cityArrows, arrowsActive && scale === "city");
-            toggle(outlines, zoneArrows, arrowsActive && scale === "zone");
+            var scale = scaleForZoom();
+            var colored = map.hasLayer(filled);
+            syncPolygon(states, scale === "state", "state", colored);
+            syncPolygon(cities, scale !== "state", "city",
+                        colored && scale === "city");
+            syncPolygon(zones, scale === "zone", "zone", colored);
+            redraw();
         }
-        map.on("overlayadd", function(e) {
-            if (e.layer === filled && map.hasLayer(outlines)) {
+        map.on("overlayadd", function(event) {
+            if (event.layer === filled && map.hasLayer(outlines)) {
                 map.removeLayer(outlines);
-            } else if (e.layer === outlines && map.hasLayer(filled)) {
+            } else if (event.layer === outlines && map.hasLayer(filled)) {
                 map.removeLayer(filled);
             }
             sync();
         });
         map.on("overlayremove", sync);
-        map.on("zoomend", sync);
+        map.on("zoomend moveend resize", sync);
         sync();
     })({{ this._parent.get_name() }},
        {{ this.outlines.get_name() }}, {{ this.filled.get_name() }},
-       {{ this.municipal.get_name() }},
+       {{ this.states.get_name() }}, {{ this.municipal.get_name() }},
        {% if this.zones %}{{ this.zones.get_name() }}{% else %}null{% endif %},
-       {% if this.state_arrows %}{{ this.state_arrows.get_name() }}{% else %}null{% endif %},
-       {% if this.city_arrows %}{{ this.city_arrows.get_name() }}{% else %}null{% endif %},
-       {% if this.zone_arrows %}{{ this.zone_arrows.get_name() }}{% else %}null{% endif %},
-       {{ this.low }}, {{ this.high }});
+       {{ this.arrow_data_json }}, {{ this.low }}, {{ this.high }});
     {% endmacro %}
     """)
 
     def __init__(
         self, outlines: folium.FeatureGroup, filled: folium.FeatureGroup,
-        municipal: folium.GeoJson, zones: folium.GeoJson | None,
-        state_arrows: folium.FeatureGroup | None,
-        city_arrows: folium.FeatureGroup | None,
-        zone_arrows: folium.FeatureGroup | None,
+        states: folium.GeoJson, municipal: folium.GeoJson,
+        zones: folium.GeoJson | None, arrow_data: dict,
     ) -> None:
         super().__init__()
         self._name = "DeltaZoomLayers"
         self.outlines = outlines
         self.filled = filled
+        self.states = states
         self.municipal = municipal
         self.zones = zones
-        self.state_arrows = state_arrows
-        self.city_arrows = city_arrows
-        self.zone_arrows = zone_arrows
+        self.arrow_data_json = json.dumps(arrow_data, separators=(",", ":"))
         self.low = STATE_MAX_ZOOM
         self.high = ZONE_MIN_ZOOM
 
