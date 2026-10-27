@@ -26,12 +26,12 @@ Para preparar zonas a partir desta branch: make zones-setup ZONE_UFS=SP. A corre
 
 Na página **Deltas e viradas**, abra **Camadas** no canto superior direito do mapa:
 
-1. **Divisões + setas** (inicial): mostra os limites dos municípios ou das zonas aproximadas, **sem preencher as regiões**. As setas vermelhas/azuis indicam o sentido da evolução relativa do saldo; comprimento cresce com a magnitude do delta, limitado à dimensão do polígono. A seta não representa deslocamento de eleitores.
-2. **Áreas por delta (sem setas)**: pinta a região conforme o sinal de Δ (vermelho `#d60828` para Lula, azul `#272d97` para Flávio, neutro `#6272a4` para Δ = 0), **sem desenhar nenhuma seta**.
+1. **Divisões estaduais + setas** (inicial, rótulo de controle mantido como "Divisões + setas"): mostra **somente as divisas dos estados**, em qualquer zoom. Municípios e zonas são polígonos sem linhas, destinados exclusivamente ao hover. As setas vermelhas/azuis indicam a direção da variação relativa, com comprimento em pixels. A seta não representa deslocamento de eleitores.
+2. **Áreas por delta (sem setas)**: pinta estados/municípios/zonas conforme o zoom e o sinal de Δ (vermelho `#d60828` para Lula, azul `#272d97` para Flávio, neutro `#6272a4` para Δ = 0), **sem setas e sem linhas internas**, mantendo apenas as divisas estaduais.
 
 O controle de camadas é do Leaflet e funciona no navegador: ao ativar uma das opções, a outra é desligada sem rerun do Streamlit, mantendo zoom, centro e mapa-base OSM. Também é possível desligar as duas, deixando somente os contornos territoriais sobre o mapa-base.
 
-**Desempenho:** polígonos geográficos serializados uma só vez, com coordenadas arredondadas a quatro casas decimais, reaproveitados pelos dois modos via troca de estilo JavaScript. As setas são desenhadas num único Canvas Leaflet em pixels, sem milhares de instâncias de `Marker`; as feições eleitorais continuam no GeoJSON para os tooltips. Regiões sem dados comparáveis conservam seus contornos, mas nunca recebem setas nem preenchimento eleitoral fictício. O filtro "Somente viradas" mantém as divisões territoriais visíveis.
+**Desempenho:** polígonos geográficos serializados uma só vez, com coordenadas arredondadas a quatro casas decimais, reaproveitados pelos dois modos via troca de estilo JavaScript. As setas são desenhadas num único Canvas Leaflet em pixels, sem milhares de instâncias de `Marker`; as feições eleitorais continuam no GeoJSON para os tooltips. Regiões sem dados comparáveis mantêm a área interativa para hover, mas não recebem setas nem preenchimento eleitoral fictício. O filtro "Somente viradas" mantém apenas as divisas estaduais visíveis; os polígonos de municípios/zonas continuam interativos, sem linhas.
 
 **Escopo das divisas:** a camada territorial segue o detalhamento selecionado: municípios oficiais IBGE ou áreas **aproximadas** de zonas dentro de cada município. A UF selecionada delimita o recorte, e o mapa-base apresenta o contexto cartográfico das divisas estaduais. Não foi inventada uma malha oficial de zonas eleitorais.
 
@@ -209,3 +209,37 @@ Depois de atualizar a branch e reiniciar o servidor, confirme que:
 - No zoom 11+, com uma UF preparada, surgem as zonas aproximadas e suas setas.
 - Em **Áreas por delta**, os preenchimentos seguem o mesmo nível, sem setas.
 - A página **Atlas Eleitoral** mantém intacto o clique e o foco municipal.
+
+## Ajuste de legibilidade — somente divisas estaduais
+
+Na revisão mais recente da página de deltas:
+
+- O mapa mostra **somente contornos dos estados** em todos os zooms (0–6
+  estados, 7–10 municípios, 11+ zonas quando disponíveis). As áreas
+  territoriais internas continuam calculadas e representadas para
+  hover/tooltips, mas **não desenham divisas municipais ou zonais**.
+- O contorno estadual fica numa camada **não interativa** e acima do
+  preenchimento; por isso o mouse sobre município/zona continua mostrando
+  nome da região, saldos 1T/2T, Δ, variações individuais e virada.
+- Os perímetros estaduais de polígonos derivados da união IBGE são
+  desenhados somente pelos anéis externos. Buracos interiores da
+  simplificação municipal não aparecem como riscos ou falsas fronteiras.
+- As setas usam apenas vermelho `#d60828` ou azul `#272d97`,
+  **sem contorno branco nem halo**. O comprimento e a espessura por
+  zoom continuam calculados em pixels e permanece a redução de
+  sobreposições em áreas muito densas.
+- O modo **Áreas por delta (sem setas)** conserva o preenchimento por nível
+  de zoom, sem bordas internas.
+- **Escopo estrito:** alterados somente `mapa_eleicoes/swing_layers.py`,
+  `tests/test_swing_layers.py` e esta documentação. O Atlas Eleitoral
+  principal, `app.py`, `map_focus.py` e `interactive_map.py` não foram
+  tocados nesta revisão.
+
+### Verificações antes de merge
+
+Após `make test` e `make preview ANO=2026`, conferir que:
+1. O mapa nacional e os zooms altos exibem contornos **somente estaduais**.
+2. O hover fornece dados municipais no zoom intermediário e zonais no zoom
+   máximo, sem desenhar linhas internas.
+3. Não há traços brancos nas setas; o modo preenchido não contém setas.
+4. O zoom e clique do Atlas principal permanecem funcionando como antes.
