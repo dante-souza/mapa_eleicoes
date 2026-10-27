@@ -25,6 +25,9 @@ from mapa_eleicoes.interactive_map import (
     PENDING_ZONE, ZONE_DETAIL, cached_zone_labels, render_explorer,
 )
 from mapa_eleicoes.zone_names import zone_label
+from mapa_eleicoes.geo_payload import (
+    BoundedGeoJson, feature_collection, leaflet_bounds, rounded_geometries,
+)
 from mapa_eleicoes.map_focus import CityFocus, FocusBackdrop, context_layer
 from mapa_eleicoes.zone_geometry import UF_PREFIX
 from mapa_eleicoes.zone_map import districts_available
@@ -75,6 +78,21 @@ def load_shape(level: str) -> gpd.GeoDataFrame | None:
     if shape.crs is None:
         raise ValueError("GeoJSON sem CRS")
     return shape.to_crs(4326)
+
+
+@st.cache_resource(show_spinner=False, max_entries=4)
+def shape_geometries(level: str, stamp: float, _frame: gpd.GeoDataFrame) -> dict[str, dict]:
+    """GeoJSON arredondado por map_id, feito uma vez por malha (`stamp` = mtime).
+
+    cache_resource: o dicionario e compartilhado sem copia; nao modificar.
+    """
+    return rounded_geometries(_frame)
+
+
+def shape_stamp(level: str) -> float:
+    filename = "zonas.geojson" if level == "Zona eleitoral" else "municipios.geojson"
+    path = DATA / "geo" / filename
+    return path.stat().st_mtime if path.exists() else 0.0
 
 
 @st.cache_data(show_spinner=False)
@@ -231,7 +249,13 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         display["destaque"] = [
             f"{br_number(value)}%" for value in joined["destaque"]
         ]
-    geojson = json.loads(display.to_json(drop_id=True))
+    # Geometrias arredondadas em cache + propriedades desta execucao: evita
+    # serializar 5.570 poligonos (15 casas decimais) a cada rerun.
+    geometries = shape_geometries(level, shape_stamp(level), all_geometry)
+    geojson = feature_collection(
+        [str(code) for code in display["map_id"]], geometries,
+        {column: list(display[column]) for column in display.columns if column != "geometry"},
+    )
     color_by_key = dict(zip(joined["map_id"], [
         margin_shade(number, margin, bool(tie)) if name else "#44475a"
         for number, margin, tie, name in zip(
@@ -242,9 +266,11 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
     highlight = dict(zip(joined["map_id"], [
         float(value or 0) for value in joined.get("destaque", [0] * len(joined))
     ]))
-    centroid = geometry.geometry.union_all().representative_point()
+    # Centro pela caixa (a uniao de todos os poligonos custava ~3 s por rerun
+    # e quebrava com geometria invalida); o fit_bounds enquadra logo depois.
     bounds = geometry.total_bounds
-    map_view = atlas_map([float(centroid.y), float(centroid.x)])
+    map_bounds = leaflet_bounds(geometry)
+    map_view = atlas_map([(bounds[1] + bounds[3]) / 2, (bounds[0] + bounds[2]) / 2])
     scope_ufs = data.get_column("uf").unique().to_list()
     scope_uf = uf if uf != "Todas" else (scope_ufs[0] if len(scope_ufs) == 1 else None)
     single_city = municipality != "Todos" and len(geometry) == 1
@@ -282,9 +308,13 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
              for code in all_geometry["map_id"]]
         ]
         if prefix and not rest.empty:
-            context_layer(json.loads(rest[["map_id", "geometry"]].to_json(drop_id=True))).add_to(map_view)
-    results_layer = folium.GeoJson(
-        geojson, name="Resultados", style_function=style,
+            rest_ids = [str(code) for code in rest["map_id"]]
+            context_layer(
+                feature_collection(rest_ids, geometries, {"map_id": rest_ids}),
+                bounds=leaflet_bounds(rest),
+            ).add_to(map_view)
+    results_layer = BoundedGeoJson(
+        geojson, bounds=map_bounds, name="Resultados", style_function=style,
         highlight_function=lambda _: {"weight": 1.5, "color": "#f8f8f2"},
         tooltip=folium.GeoJsonTooltip(fields=fields, aliases=aliases, sticky=False),
     ).add_to(map_view)
