@@ -206,12 +206,15 @@ def render_explorer(
     st_folium(
         base_map,
         key=map_key,
-        on_change=on_map_change,
+        on_change=on_map_change if drill else None,
         height=MAP_HEIGHT,
         use_container_width=True,
-        # Somente o clique volta ao servidor: zoom/centro/bounds geravam
-        # um rerun por movimento (overlay cinza, piscar, camera resetada).
-        returned_objects=["last_object_clicked", "last_object_clicked_count"],
+        # No modo municipal puro, TODOS os cliques/zooms são do Leaflet.
+        # Não enviar cliques ao Streamlit: evitar rerun que remonta a câmera.
+        # No drill-down, enviar apenas clique para carregar locais de votação.
+        returned_objects=(
+            ["last_object_clicked", "last_object_clicked_count"] if drill else []
+        ),
         return_on_hover=False,
         # Sem zoom/center: o enquadramento da cidade clicada e feito no
         # navegador (map_focus.CityFocus), antes mesmo do rerun.
