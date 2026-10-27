@@ -24,3 +24,5 @@
 
 19. **Paleta eleitoral estável:** candidato/legenda 13 (PT) em vermelho #ff5555 e 22 (PL) em azul #3b82f6; nunca inferir por ordenacao no ranking, nem pelo nome Lula. Para demais numeros, cores fixas por prefixo de NR_VOTAVEL. Validar partidos no dataset oficial quando houver coligacao/candidatura excepcional.
 20. **Make geo-import sem arquivo:** ausência de FILE para municipios deve configurar fontes oficiais com cache; LEVEL=zona requer arquivo proprio, jamais fabricar zonas a partir de municipios. Cobrir os dois casos em testes.
+
+21. **Filtros de cargos e turnos:** criar a lista de cargos apos filtrar por ano/UF, mas antes de aplicar filtro de turno. Exibir apenas turnos existentes para cargo selecionado. `make offices ANO=2026` deve mostrar cargos reais por turno/UF e diagnosticar `votos_BR.csv.gz`, sem inventar Presidente.
