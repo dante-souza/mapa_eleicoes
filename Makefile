@@ -14,6 +14,9 @@ SECTION_FILE ?=
 SECTIONS ?= 1
 ZONES ?= 0
 ZONE_UFS ?=
+# UF=RJ e alias para a execucao pontual de zonas.
+# ZONE_UFS tem precedencia quando ambos forem informados.
+ZONE_TARGET_UFS = $(if $(strip $(ZONE_UFS)),$(strip $(ZONE_UFS)),$(strip $(UF)))
 SETORES ?=
 ZONE_SIMPLIFY_METERS ?= 30
 FORCE ?= 0
@@ -50,7 +53,7 @@ help:
 	@echo "  make prepare-serving ANO=2026            materializa Parquet pronto para mapa"
 	@echo "  make prepare-sections ANO=2026           prepara votos por secao (preserva NR_SECAO)"
 	@echo "  make prepare-locations ANO=2026          geocodifica locais TSE oficiais"
-	@echo "  make zones-setup ANO=2026 [ZONE_UFS=SP,RJ] [SETORES=BR_setores_CD2022.zip]"
+	@echo "  make zones-setup UF=RJ [ZONE_UFS=SP,RJ] [SETORES=BR_setores_CD2022.zip]"
 	@echo "                                          areas APROXIMADAS de zona (setores IBGE 2022 + locais TSE)"
 	@echo "  make app-ready ANO=2026                  prepara fontes, geometria e dados para mapa"
 	@echo "  make preview                            abrir mapa com dados ja processados (parciais)"
@@ -153,7 +156,7 @@ prepare-locations: bootstrap
 # Exige locais (prepare-locations) e de/para (geo-setup). Sem SETORES,
 # baixa o ZIP oficial de cada UF do IBGE (com cache). Nao e limite oficial.
 zones-setup: bootstrap
-	$(VENV_PY) -m mapa_eleicoes.zone_geometry --year $(ANO) $(if $(ZONE_UFS),--ufs "$(ZONE_UFS)",) $(if $(SETORES),--setores "$(SETORES)",) --simplify-meters $(ZONE_SIMPLIFY_METERS)
+	$(VENV_PY) -m mapa_eleicoes.zone_geometry --year $(ANO) $(if $(ZONE_TARGET_UFS),--ufs "$(ZONE_TARGET_UFS)",) $(if $(SETORES),--setores "$(SETORES)",) --simplify-meters $(ZONE_SIMPLIFY_METERS)
 
 # make run instala geografia/BR/PR, processa ZIPs e so abre a interface
 # depois de materializar o catalogo. Sem dicas de Make na interface.
