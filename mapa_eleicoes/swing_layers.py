@@ -366,63 +366,117 @@ def _arrows_group(
     return group
 
 
+def _state_geography(
+    municipal: gpd.GeoDataFrame, states: list[dict],
+) -> gpd.GeoDataFrame:
+    """Contornos estaduais reais como união dos municípios IBGE carregados.
+
+    Nunca usa retângulos/bounds como geometria de UF. Em cobertura parcial,
+    o contorno deriva da malha municipal carregada; o tooltip não declara
+    totalização estadual completa.
+    """
+    prefix_to_uf = {prefix: uf for uf, prefix in UF_PREFIX.items()}
+    by_uf = defaultdict(list)
+    for key, shape in zip(municipal["_key"], municipal.geometry):
+        if shape is None or shape.is_empty:
+            continue
+        uf = prefix_to_uf.get(str(key)[:2])
+        if uf:
+            by_uf[uf].append(shape)
+    state_votes = {str(row["uf"]): row for row in states}
+    features = []
+    for uf, geoms in sorted(by_uf.items()):
+        # União territorial por UF evita desenhar milhares de divisas
+        # municipais quando o mapa está afastado.
+        dissolved = shapely.union_all(geoms)
+        if dissolved.is_empty:
+            continue
+        if not dissolved.is_valid:
+            dissolved = shapely.make_valid(dissolved)
+        geometry = dissolved.simplify(.012, preserve_topology=True)
+        row = state_votes.get(uf)
+        vote = (dict(row, municipio=f"UF {uf} · "
+                     f'{int(row["municipios_comparaveis"])} municípios comparáveis')
+                if row is not None else None)
+        features.append({"_key": uf, "_vote": vote, "geometry": geometry})
+    return gpd.GeoDataFrame(features, geometry="geometry", crs=municipal.crs)
+
+
+def _canvas_data(geo: gpd.GeoDataFrame | None) -> list[list]:
+    """[latitude, longitude, delta], sem criar milhares de markers DOM."""
+    if geo is None or geo.empty:
+        return []
+    points = []
+    for geom, vote in zip(geo.geometry, geo["_vote"]):
+        if geom is None or geom.is_empty or vote is None:
+            continue
+        delta = int(vote["delta"])
+        if not delta:
+            continue
+        position = geom.representative_point()
+        points.append([round(float(position.y), 5),
+                       round(float(position.x), 5), delta])
+    return points
+
+
 def delta_map(
     municipal: gpd.GeoDataFrame, *, states: list[dict] | None = None,
     zones: gpd.GeoDataFrame | None = None,
 ) -> folium.Map:
-    """Três escalas automáticas de setas e dois modos exclusivos de visualização.
+    """Estado no zoom nacional, município no intermediário, zona no máximo.
 
-    0..6: UF (uma seta grande); 7..10: município; >=11: zona se existir malha
-    para a UF, senão mantém município. A geometria nunca é inventada.
+    A visualização de setas desenha em Canvas e usa tamanho em pixels, sem
+    milhares de elementos HTML nem rerun ao aproximar/arrastar o mapa.
     """
     if municipal.empty:
         raise ValueError("Não há geometria municipal para desenhar.")
     bounds = leaflet_bounds(municipal)
     west, south, east, north = (float(x) for x in municipal.total_bounds)
-    m = atlas_map([(south + north)/2, (west + east)/2])
+    map_view = atlas_map([(south + north) / 2, (west + east) / 2])
+    state_geo = _state_geography(municipal, states or [])
+    if state_geo.empty:
+        raise ValueError("Sem contornos estaduais correspondentes à malha municipal.")
     outline_mode = folium.FeatureGroup(
         name="Divisões + setas", overlay=True, control=True, show=True,
-    ).add_to(m)
+    ).add_to(map_view)
     filled_mode = folium.FeatureGroup(
         name="Áreas por delta (sem setas)", overlay=True, control=True, show=False,
-    ).add_to(m)
-    municipality_layer = BoundedGeoJson(
-        _polygons(municipal, approx_zone=False), bounds=bounds, control=False,
+    ).add_to(map_view)
+    state_layer = BoundedGeoJson(
+        _polygons(state_geo, approx_zone=False), bounds=bounds,
+        control=False, show=False,
         style_function=lambda f: {
-            "fillColor": NEUTRAL, "fillOpacity": 0,
-            "color": BORDER, "weight": .75,
+            "fillOpacity": 0, "color": "#e0e0e8", "weight": 1.5,
         },
         tooltip=_polygon_tooltip(),
-    ).add_to(m)
+    ).add_to(map_view)
+    municipal_layer = BoundedGeoJson(
+        _polygons(municipal, approx_zone=False), bounds=bounds,
+        control=False, show=False,
+        style_function=lambda f: {
+            "fillOpacity": 0, "color": BORDER, "weight": .8,
+        },
+        tooltip=_polygon_tooltip(),
+    ).add_to(map_view)
     zone_layer = None
-    zone_arrows = None
     if zones is not None and not zones.empty:
-        zone_bounds = leaflet_bounds(zones)
         zone_layer = BoundedGeoJson(
-            _polygons(zones, approx_zone=True), bounds=zone_bounds,
+            _polygons(zones, approx_zone=True), bounds=leaflet_bounds(zones),
             control=False, show=False,
             style_function=lambda f: {
-                "fillColor": NEUTRAL, "fillOpacity": 0,
-                "color": BORDER, "weight": .75, "dashArray": "4 2",
+                "fillOpacity": 0, "color": BORDER, "weight": .8,
             },
             tooltip=_polygon_tooltip(),
-        ).add_to(m)
-        zone_arrows = _arrows_group(
-            _arrow_collection(zones, size_cap=.02, size_floor=.0004, fraction=.28),
-            outline_mode, label="Setas zonais", bounds=zone_bounds,
-        )
-    city_arrows = _arrows_group(
-        _arrow_collection(municipal), outline_mode,
-        label="Setas municipais", bounds=bounds,
-    )
-    state_arrows = _arrows_group(
-        _state_arrows(municipal, states or []), outline_mode,
-        label="Setas estaduais", bounds=bounds,
-    )
-    m.add_child(DeltaZoomLayers(
-        outline_mode, filled_mode, municipality_layer, zone_layer,
-        state_arrows, city_arrows, zone_arrows,
+        ).add_to(map_view)
+    arrows = {
+        "state": _canvas_data(state_geo),
+        "city": _canvas_data(municipal),
+        "zone": _canvas_data(zones),
+    }
+    map_view.add_child(DeltaZoomLayers(
+        outline_mode, filled_mode, state_layer, municipal_layer,
+        zone_layer, arrows,
     ))
-    folium.LayerControl(position="topright", collapsed=False).add_to(m)
-    m.fit_bounds(bounds)
-    return m
+    folium.LayerControl(position="topright", collapsed=False).add_to(map_view)
+    map_view.fit_bounds(bounds)
+    return map_view
