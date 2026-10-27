@@ -275,9 +275,45 @@ def coverage(election_year: int = 2026) -> dict:
     return summary
 
 
+
+def import_or_setup(
+    file: Path | None,
+    *,
+    level: str = "municipio",
+    geo_year: int = 2025,
+    simplify_meters: int = 1000,
+    force: bool = False,
+) -> dict:
+    """Compatibilidade: make geo-import sem FILE usa as fontes oficiais.
+
+    Zonas eleitorais nao possuem malha territorial uniforme neste projeto;
+    nunca confundir as geometrias de municipios com limites de zonas.
+    """
+    if level not in ("municipio", "zona"):
+        raise ValueError("LEVEL deve ser municipio ou zona")
+    if file is None:
+        if level == "zona":
+            raise ValueError(
+                "Malha de zona eleitoral requer arquivo proprio. "
+                "Use make geo-import FILE=zonas.geojson LEVEL=zona. "
+                "Os limites municipais do IBGE nao sao limites de zona."
+            )
+        print("[GEO IMPORT] Sem FILE: executando configuracao oficial de municipios.")
+        return setup(geo_year, simplify_meters=simplify_meters, force=force)
+    if not file.is_file():
+        raise FileNotFoundError(f"Arquivo geografico nao encontrado: {file}")
+    cli.geo_import(file, level)
+    return {"origem": str(file), "geometria": level}
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Geografia oficial; usar Makefile")
     sub = parser.add_subparsers(dest="command", required=True)
+    import_cmd = sub.add_parser("import")
+    import_cmd.add_argument("--file", type=Path)
+    import_cmd.add_argument("--level", choices=["municipio", "zona"], default="municipio")
+    import_cmd.add_argument("--geo-year", type=int, default=2025)
+    import_cmd.add_argument("--simplify-meters", type=int, default=1000)
+    import_cmd.add_argument("--force", action="store_true")
     make = sub.add_parser("setup")
     make.add_argument("--geo-year", type=int, default=2025)
     make.add_argument("--crosswalk", type=Path, default=None)
@@ -287,7 +323,12 @@ def main(argv: list[str] | None = None) -> None:
     check = sub.add_parser("check")
     check.add_argument("--year", type=int, default=2026)
     args = parser.parse_args(argv)
-    if args.command == "setup":
+    if args.command == "import":
+        import_or_setup(
+            args.file, level=args.level, geo_year=args.geo_year,
+            simplify_meters=args.simplify_meters, force=args.force,
+        )
+    elif args.command == "setup":
         setup(
             args.geo_year, crosswalk=args.crosswalk, malha=args.malha,
             simplify_meters=args.simplify_meters, force=args.force,
