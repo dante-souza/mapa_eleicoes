@@ -18,6 +18,7 @@ from mapa_eleicoes.geo_bridge import add_properties, ibge_code, zone_code
 from mapa_eleicoes.map_tiles import atlas_map
 from mapa_eleicoes.party_colors import color_for_number
 from mapa_eleicoes.office_catalog import available_offices, available_turns, preferred_office
+from mapa_eleicoes.dashboard_options import round_label, geometry_options
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -236,6 +237,7 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
     st.caption(f"{len(display)} polígonos exibidos · Geometria: {level} · Sem inferir zonas")
 
 
+
 st.title("🗳️ Atlas Eleitoral")
 st.caption("Dados públicos do Tribunal Superior Eleitoral · Estudo independente · Sem vínculo com TSE ou G1")
 years = sorted((int(path.name) for path in (DATA / "serving").glob("20[0-9][0-9]")
@@ -272,10 +274,7 @@ with st.sidebar:
     turno = st.selectbox(
         "Turno", [1, 2],
         index=0,
-        format_func=lambda value: (
-            f"{value}º turno" if value in turnos
-            else f"{value}º turno (sem dados)"
-        ),
+        format_func=lambda value: round_label(value, turnos),
         key=f"turno_{year}_{uf}_{cargo}",
     )
     if turno not in turnos:
@@ -302,10 +301,11 @@ with st.sidebar:
     # usa municipios. A selecao de zona continua filtrando votos, mas
     # nunca apresenta um municipio como poligono eleitoral de zona.
     zone_shape_available = (DATA / "geo" / "zonas.geojson").is_file()
-    if zone_shape_available:
-        level = st.radio("Geometria", ["Município", "Zona eleitoral"])
+    levels = geometry_options(zone_shape_available)
+    if len(levels) > 1:
+        level = st.radio("Geometria", levels)
     else:
-        level = "Município"
+        level = levels[0]
         st.caption("Mapa municipal. A votacao por zona aparece nos filtros e na tabela.")
     if level == "Município" and zone != "Todas":
         st.caption("Os votos refletem a zona escolhida; o contorno e do municipio.")
