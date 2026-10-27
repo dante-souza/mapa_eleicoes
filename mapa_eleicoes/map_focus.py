@@ -154,18 +154,24 @@ class CityFocus(MacroElement):
                 map.fitBounds(featureLayer.getBounds(), {padding: [24, 24]});
                 setFocus(id);
             }
+            var handledClick = null;
             layer.eachLayer(function (featureLayer) {
                 if (idOf(featureLayer)) {
-                    featureLayer.on("click", function () {
+                    featureLayer.on("click", function (e) {
+                        // Mesmo evento DOM propagado para map.on("click").
+                        handledClick = e.originalEvent || null;
                         focusCity(featureLayer);
                     });
                 }
             });
-            // Fallback: se Canvas/pane impedir a entrega direta do clique
-            // ao polígono, resolver a cidade pela coordenada no próprio mapa.
-            // Não duplicar quando o clique já passou pelo listener da feição.
+            // Fallback: se Canvas/pane não entregar o clique à feição,
+            // recuperar o município pela coordenada no próprio mapa.
+            // Só ignora o evento se o listener direto realmente rodou.
             map.on("click", function (e) {
-                if (e.sourceTarget && idOf(e.sourceTarget)) { return; }
+                if (e.originalEvent && handledClick === e.originalEvent) {
+                    handledClick = null;
+                    return;
+                }
                 var city = e.latlng ? cityAt(e.latlng) : null;
                 if (city) { focusCity(city); }
             });
