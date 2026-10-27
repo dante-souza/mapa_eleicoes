@@ -205,6 +205,35 @@ def test_state_border_ignores_internal_holes_from_simplified_municipalities():
     assert len(outline.geometry.iloc[0].interiors) == 0
 
 
+def test_zone_hover_retains_name_and_voting_information_without_inner_lines():
+    zone = gpd.GeoDataFrame(
+        {"_key": ["SP:100:1"]},
+        geometry=[Polygon([(0, 0), (.5, 0), (.5, .5), (0, .5)])],
+        crs="EPSG:4326",
+    )
+    zone["_vote"] = [{
+        "uf": "SP", "municipio": "Cidade 1", "zona": 1,
+        "delta": -10, "saldo_1t": 20, "saldo_2t": 10,
+        "delta_a": 0, "delta_b": 10, "virada": "Sem virada",
+    }]
+    fmap = delta_map(sample(), zones=zone)
+    layers = [child for child in fmap._children.values()
+              if isinstance(child, folium.GeoJson)]
+    assert len(layers) == 4
+    zonal = layers[2]
+    props = zonal.data["features"][0]["properties"]
+    assert "Cidade 1" in props["regiao"]
+    assert "Zona 1" in props["regiao"]
+    assert props["delta"] == "-10"
+    tooltips = [x for x in zonal._children.values()
+                if isinstance(x, folium.GeoJsonTooltip)]
+    assert len(tooltips) == 1
+    assert {"regiao", "saldo1", "saldo2", "delta", "lula", "flavio", "virada"} <= set(
+        tooltips[0].fields
+    )
+    assert layers[-1].options["interactive"] is False
+
+
 def test_original_map_page_runs_as_classic_streamlit_homepage():
     """Prevent a st.navigation router from changing the main map lifecycle."""
     from pathlib import Path
