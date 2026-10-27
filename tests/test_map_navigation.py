@@ -64,3 +64,22 @@ def test_invalid_mouse_payload_is_rejected():
                   {"lat": float("nan"), "lng": -46},
                   {"lat": -23.5, "lng": 500}):
         assert valid_position(wrong) is None
+
+
+def test_municipality_only_mode_does_not_send_clicks_to_streamlit():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "mapa_eleicoes" /
+           "interactive_map.py").read_text(encoding="utf-8")
+    assert "on_change=on_map_change if drill else None" in src
+    assert '["last_object_clicked", "last_object_clicked_count"] if drill else []' in src
+
+
+def test_main_map_restores_city_only_when_filter_scope_matches():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "app.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'st.session_state.get("atlas_explorer_scope") == current_scope' in src
+    assert "CityFocus(results_layer, initial_focus=selected_city)" in src
