@@ -1,15 +1,13 @@
 """Página de deltas e viradas independente da apuração existente."""
 from pathlib import Path
-import folium
 import geopandas as gpd
 import polars as pl
 import streamlit as st
 from streamlit_folium import st_folium
-from mapa_eleicoes.map_tiles import atlas_map
 from mapa_eleicoes.swing import swing_results
 from mapa_eleicoes.vote_sources import combine_sources
-from mapa_eleicoes.zone_geometry import zone_file
-from mapa_eleicoes.party_colors import PT_RED, PL_BLUE
+from mapa_eleicoes.zone_geometry import zone_file, UF_PREFIX
+from mapa_eleicoes.swing_layers import delta_map
 
 DATA = Path(__file__).resolve().parents[1] / "data"
 st.set_page_config(page_title="Deltas e viradas", layout="wide", page_icon="↗")
@@ -49,6 +47,9 @@ def georeference(data, level, uf):
         if not field:
             raise ValueError("Malha sem código IBGE.")
         geo["_key"] = [str(x).zfill(7) for x in geo[field]]
+        if uf != "Todas":
+            prefix = UF_PREFIX[uf]
+            geo = geo.loc[[key.startswith(prefix) for key in geo["_key"]]].copy()
     else:
         path = zone_file(DATA, uf)
         if not path.exists():
@@ -56,44 +57,11 @@ def georeference(data, level, uf):
         geo = load_geometry(str(path), path.stat().st_mtime_ns).copy()
         geo["_key"] = [f"{a}:{b}:{int(c)}" for a,b,c in zip(geo["uf"], geo["cd_municipio_tse"], geo["zona"])]
         values = {f'{r["uf"]}:{r["cd_municipio_tse"]}:{int(r["zona"])}': r for r in data.to_dicts()}
-    geo = geo.loc[geo["_key"].isin(values)].copy()
-    geo["_vote"] = [values[key] for key in geo["_key"]]
+    # Mantém todos os contornos do recorte, inclusive regiões sem delta.
+    # É essencial no filtro "Somente viradas": as demais divisas continuam no mapa.
+    geo = geo.loc[geo.geometry.notna() & ~geo.geometry.is_empty].copy()
+    geo["_vote"] = [values.get(key) for key in geo["_key"]]
     return geo
-
-def delta_map(geo, arrows):
-    bounds = geo.total_bounds
-    m = atlas_map([(bounds[1]+bounds[3])/2, (bounds[0]+bounds[2])/2])
-    features = []
-    for _, item in geo.iterrows():
-        r = item["_vote"]
-        d = int(r["delta"])
-        color = PT_RED if d > 0 else PL_BLUE if d < 0 else "#6272a4"
-        caption = (f'{r["municipio"]} | Δ saldo: {d:+,} votos | '
-                   f'Saldo 1T: {int(r["saldo_1t"]):+,} | Saldo 2T: {int(r["saldo_2t"]):+,} | '
-                   f'Δ Lula: {int(r["delta_a"]):+,} | Δ Flávio: {int(r["delta_b"]):+,} | '
-                   f'Virada: {r["virada"]}')
-        features.append({"type":"Feature", "geometry": item.geometry.__geo_interface__,
-                         "properties":{"color":color,"tooltip":caption}})
-    folium.GeoJson({"type":"FeatureCollection","features":features},
-                   style_function=lambda f: {"fillColor":f["properties"]["color"],"fillOpacity":.65,"color":"#161717","weight":.45},
-                   tooltip=folium.GeoJsonTooltip(fields=["tooltip"],aliases=[""],labels=False)).add_to(m)
-    if arrows:
-        maximum = max((abs(int(r["delta"])) for r in geo["_vote"]), default=1) or 1
-        for _, item in geo.iterrows():
-            d = int(item["_vote"]["delta"])
-            if not d or item.geometry is None or item.geometry.is_empty:
-                continue
-            p = item.geometry.representative_point()
-            size = .01 + .1 * (abs(d)/maximum)**.5
-            dest = [p.y + size, p.x + (-size if d > 0 else size)]
-            color = PT_RED if d > 0 else PL_BLUE
-            folium.PolyLine([[p.y,p.x],dest],color=color,weight=2.5,
-                            tooltip=f"Δ saldo {d:+,}").add_to(m)
-            folium.Marker(dest, icon=folium.DivIcon(
-                html=f'<span style="color:{color};font-size:16px">{"↖" if d>0 else "↗"}</span>',
-                icon_size=(18,18),icon_anchor=(9,9))).add_to(m)
-    m.fit_bounds([[bounds[1],bounds[0]],[bounds[3],bounds[2]]])
-    return m
 
 st.title("↗ Deltas e viradas de votos")
 st.caption("Saldo = Lula (13) − Flávio (22) | Δ = saldo 2º turno − saldo 1º turno")
@@ -115,7 +83,6 @@ with st.sidebar:
     if uf != "Todas":
         votes = votes.filter(pl.col("uf")==uf)
     level = st.radio("Detalhamento",["Município","Zona no município (aproximada)"])
-    arrows = st.checkbox("Setas de variação",value=True)
     only_flips = st.checkbox("Somente viradas efetivas",value=False)
 try:
     result = swing_results(votes,level="zona" if level != "Município" else "municipio")
@@ -131,7 +98,13 @@ m1,m2,m3 = st.columns(3)
 m1.metric("Δ favorável a Lula",result.filter(pl.col("delta")>0).height)
 m2.metric("Δ favorável a Flávio",result.filter(pl.col("delta")<0).height)
 m3.metric("Viradas efetivas",result.filter(pl.col("virada")!="Sem virada").height)
-st.caption("🔴 Vermelho / ↖: delta positivo · 🔵 Azul / ↗: delta negativo. Setas esquemáticas com tamanhos relativos dentro do recorte.")
+st.caption(
+    "No controle de camadas do mapa (canto superior direito), escolha "
+    "Divisões + setas ou Áreas por delta (sem setas). "
+    "Uma opção desliga a outra, sem recarregar a página."
+)
+st.caption("🔴 Vermelho / ↖: delta positivo · 🔵 Azul / ↗: delta negativo. "
+           "Setas simbólicas: não representam deslocamento de eleitores.")
 if level != "Município" and uf == "Todas":
     st.info("Selecione uma UF para mapear áreas aproximadas de zona. A tabela permanece disponível.")
 else:
@@ -140,12 +113,14 @@ else:
         if geo.empty:
             st.info("Não há geometria disponível para os resultados selecionados.")
         else:
-            st_folium(delta_map(geo,arrows),height=700,use_container_width=True,
-                      returned_objects=[],key=f"delta_{year}_{uf}_{level}_{arrows}_{only_flips}")
+            st_folium(delta_map(geo,approx_zone=level != "Município"),
+                      height=700,use_container_width=True,
+                      returned_objects=[],key=f"delta_{year}_{uf}_{level}_{only_flips}")
             if level != "Município":
                 st.caption("Geometria aproximada (setores IBGE 2022 + locais TSE), NÃO é limite oficial de zona.")
-            if geo.shape[0] < result.height:
-                st.caption(f"{result.height-geo.shape[0]} unidades sem geometria correspondente.")
+            represented = sum(v is not None for v in geo["_vote"])
+            if represented < result.height:
+                st.caption(f"{result.height-represented} unidades com votos, sem geometria correspondente.")
     except (ValueError,KeyError,OSError) as exc:
         st.info(f"Mapa indisponível: {exc}")
 st.subheader("Saldos e variações")
