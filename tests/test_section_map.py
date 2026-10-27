@@ -86,6 +86,9 @@ def test_official_coordinates_align_by_municipio_zona_secao_and_round(tmp_path):
         tmp_path, 2026, "RR", ["3010"], "Presidente", 1
     )
     places = section_map.load_locations(tmp_path, 2026, "RR", ["3010"], 1)
+    assert votes.schema["turno"] == places.schema["turno"] == pl.Int16
+    assert votes.schema["zona"] == places.schema["zona"] == pl.Int32
+    assert votes.schema["secao"] == places.schema["secao"] == pl.Int32
     rows, sites, no_geo = section_map.section_detail(votes, places)
     assert rows.height == 2
     assert no_geo == 0
