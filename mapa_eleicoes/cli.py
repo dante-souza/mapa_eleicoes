@@ -105,7 +105,10 @@ def import_directory(source: Path, year: int) -> tuple[list[str], list[dict]]:
     if not source.is_dir():
         raise NotADirectoryError(source)
     good, bad = [], []
-    for path in sorted(source.glob(f'votacao_secao_{year}_*.zip')):
+    from mapa_eleicoes.pipeline import accepted_name
+    for path in sorted(source.glob('*.zip')):
+        if not accepted_name(path.name, year):
+            continue
         try:
             import_archive(path, year)
             good.append(path.name)
@@ -265,7 +268,8 @@ def process_archive(path: Path, year: int, outdir: Path | None = None, chunksize
 
 def ingest(year: int, only_uf: str = '') -> tuple[list[dict], list[dict]]:
     raw = DATA / 'raw' / str(year)
-    archives = sorted(raw.glob('*.zip'))
+    # NUNCA misturar arquivos munzona com o formato votacao_secao.
+    archives = sorted(raw.glob(f'votacao_secao_{year}_*.zip'))
     if only_uf:
         archives = [p for p in archives if p.name.upper().endswith(f'_{only_uf.upper()}.ZIP')]
     if not archives:
@@ -391,6 +395,8 @@ def main(argv: list[str] | None = None):
     elif args.command == 'doctor':
         print('Raw:', [(p.name, p.stat().st_size) for p in (DATA/'raw'/str(args.year)).glob('*.zip')])
         print('CSV agregado:', [p.name for p in (DATA/'processed'/str(args.year)).glob('*.csv.gz')])
+        print('Auxiliar munzona:', [p.name for p in (DATA/'processed'/str(args.year)/'aux').glob('*') if p.is_dir()])
+        print('Manifesto prepare:', (DATA/'processed'/str(args.year)/'prepare_manifest.json').exists())
         print('Geometria:', [p.name for p in (DATA/'geo').glob('*.geojson')])
         print('De/para:', (DATA/'reference'/'tse_ibge.csv').exists())
     elif args.command == 'clean-processed':
