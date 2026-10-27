@@ -4,7 +4,7 @@ import geopandas as gpd
 import polars as pl
 import streamlit as st
 from streamlit_folium import st_folium
-from mapa_eleicoes.swing import swing_results
+from mapa_eleicoes.swing import swing_results, state_swing_results
 from mapa_eleicoes.vote_sources import combine_sources
 from mapa_eleicoes.zone_geometry import zone_file, UF_PREFIX
 from mapa_eleicoes.swing_layers import delta_map
@@ -65,65 +65,134 @@ def georeference(data, level, uf):
 
 st.title("↗ Deltas e viradas de votos")
 st.caption("Saldo = Lula (13) − Flávio (22) | Δ = saldo 2º turno − saldo 1º turno")
-st.caption("A comparação de totais agregados não prova transferência individual de votos.")
-years = sorted([int(d.name) for d in (DATA/"serving").glob("20[0-9][0-9]") if (d/"catalog.json").exists()],reverse=True)
+st.caption("A comparação de totais agregados não demonstra transferência individual de eleitores.")
+years = sorted(
+    (int(folder.name) for folder in (DATA / "serving").glob("20[0-9][0-9]")
+     if (folder / "catalog.json").is_file()),
+    reverse=True,
+)
 if not years:
     st.info("Sem dados eleitorais preparados.")
     st.stop()
+
 with st.sidebar:
-    year = st.selectbox("Eleição",years)
-    paths = sorted((DATA/"serving"/str(year)).glob("votos_*.parquet"))
-    votes = read_votes(year,tuple((p.name,p.stat().st_mtime_ns) for p in paths))
-    votes = votes.filter(pl.col("cargo").str.to_lowercase()=="presidente")
+    year = st.selectbox("Eleição", years)
+    paths = sorted((DATA / "serving" / str(year)).glob("votos_*.parquet"))
+    votes = read_votes(year, tuple((p.name, p.stat().st_mtime_ns) for p in paths))
+    votes = votes.filter(pl.col("cargo").str.to_lowercase() == "presidente")
     if votes.is_empty():
         st.info("Sem votação presidencial.")
         st.stop()
     states = sorted(votes["uf"].unique().to_list())
-    uf = st.selectbox("UF",["Todas"]+states)
+    uf = st.selectbox("UF", ["Todas"] + states)
     if uf != "Todas":
-        votes = votes.filter(pl.col("uf")==uf)
-    level = st.radio("Detalhamento",["Município","Zona no município (aproximada)"])
-    only_flips = st.checkbox("Somente viradas efetivas",value=False)
+        votes = votes.filter(pl.col("uf") == uf)
+    only_flips = st.checkbox("Somente viradas efetivas", value=False)
+
 try:
-    result = swing_results(votes,level="zona" if level != "Município" else "municipio")
+    municipal_all = swing_results(votes, level="municipio")
 except ValueError as exc:
     st.info(str(exc))
     st.stop()
-if only_flips:
-    result = result.filter(pl.col("virada")!="Sem virada")
-if result.is_empty():
-    st.info("Nenhum recorte com dados comparáveis para ambos os turnos.")
+if municipal_all.is_empty():
+    st.info("Não há municípios com dois turnos comparáveis neste recorte.")
     st.stop()
-m1,m2,m3 = st.columns(3)
-m1.metric("Δ favorável a Lula",result.filter(pl.col("delta")>0).height)
-m2.metric("Δ favorável a Flávio",result.filter(pl.col("delta")<0).height)
-m3.metric("Viradas efetivas",result.filter(pl.col("virada")!="Sem virada").height)
-st.caption(
-    "No controle de camadas do mapa (canto superior direito), escolha "
-    "Divisões + setas ou Áreas por delta (sem setas). "
-    "Uma opção desliga a outra, sem recarregar a página."
-)
-st.caption("🔴 Vermelho / ↖: delta positivo · 🔵 Azul / ↗: delta negativo. "
-           "Setas simbólicas: não representam deslocamento de eleitores.")
-if level != "Município" and uf == "Todas":
-    st.info("Selecione uma UF para mapear áreas aproximadas de zona. A tabela permanece disponível.")
-else:
+
+state_all = state_swing_results(municipal_all)
+state_view = state_all
+municipal_view = municipal_all
+if only_flips:
+    municipal_view = municipal_all.filter(pl.col("virada") != "Sem virada")
+    state_view = state_all.filter(pl.col("virada") != "Sem virada")
+
+# Nunca carregar todas as áreas de zona do Brasil em uma única navegação:
+# o TSE/IBGE gera malhas aproximadas por UF, potencialmente enormes.
+zone_view = None
+zone_geo = None
+zone_ready = uf != "Todas" and zone_file(DATA, uf).is_file()
+if zone_ready:
     try:
-        geo = georeference(result,level,uf)
-        if geo.empty:
-            st.info("Não há geometria disponível para os resultados selecionados.")
-        else:
-            st_folium(delta_map(geo,approx_zone=level != "Município"),
-                      height=700,use_container_width=True,
-                      returned_objects=[],key=f"delta_{year}_{uf}_{level}_{only_flips}")
-            if level != "Município":
-                st.caption("Geometria aproximada (setores IBGE 2022 + locais TSE), NÃO é limite oficial de zona.")
-            represented = sum(v is not None for v in geo["_vote"])
-            if represented < result.height:
-                st.caption(f"{result.height-represented} unidades com votos, sem geometria correspondente.")
-    except (ValueError,KeyError,OSError) as exc:
-        st.info(f"Mapa indisponível: {exc}")
+        zone_all = swing_results(votes, level="zona")
+        zone_view = (zone_all.filter(pl.col("virada") != "Sem virada")
+                     if only_flips else zone_all)
+        if not zone_view.is_empty():
+            zone_geo = georeference(zone_view, "Zona no município (aproximada)", uf)
+    except (ValueError, KeyError, pl.exceptions.PolarsError) as exc:
+        st.caption(f"Detalhamento por zona indisponível nesta UF: {exc}")
+
+m1, m2, m3 = st.columns(3)
+m1.metric("Δ favorável a Lula · municípios",
+          municipal_view.filter(pl.col("delta") > 0).height)
+m2.metric("Δ favorável a Flávio · municípios",
+          municipal_view.filter(pl.col("delta") < 0).height)
+m3.metric("Viradas efetivas · municípios",
+          municipal_all.filter(pl.col("virada") != "Sem virada").height)
+
+st.caption(
+    "Setas automáticas pelo zoom: até 6, uma seta por UF; 7–10, municípios; "
+    "a partir de 11, zonas eleitorais aproximadas quando preparadas."
+)
+st.caption(
+    "No canto superior direito, alterne entre Divisões + setas e "
+    "Áreas por delta (sem setas). As cores são 🔴 13/Lula e 🔵 22/Flávio."
+)
+try:
+    municipal_geo = georeference(municipal_view, "Município", uf)
+    if municipal_geo.empty:
+        st.info("Não há malha municipal para este recorte.")
+    else:
+        map_view = delta_map(
+            municipal_geo, states=state_view.to_dicts(),
+            zones=zone_geo if zone_geo is not None and not zone_geo.empty else None,
+        )
+        st_folium(
+            map_view, height=700, use_container_width=True,
+            returned_objects=[],
+            key=f"delta_zoom_{year}_{uf}_{only_flips}_{zone_ready}",
+        )
+        matched = sum(record is not None for record in municipal_geo["_vote"])
+        if matched < municipal_view.height:
+            st.caption(f"{municipal_view.height - matched} municípios sem geometria correspondente.")
+except (ValueError, KeyError, OSError, pl.exceptions.PolarsError) as exc:
+    st.info(f"Mapa indisponível: {exc}")
+
+if uf == "Todas":
+    st.caption(
+        "Para ver as setas e áreas de zonas no zoom máximo, selecione uma UF. "
+        "O mapa nacional não carrega simultaneamente todas as geometrias zonais."
+    )
+elif not zone_ready:
+    st.caption(
+        f"As áreas de zona de {uf} não estão preparadas; "
+        "no zoom máximo permanecem as setas municipais."
+    )
+else:
+    st.caption(
+        "Zonas eleitorais: áreas APROXIMADAS a partir de setores IBGE 2022 "
+        "e locais TSE, não limites oficiais."
+    )
+st.caption(
+    "Uma seta estadual representa a soma dos saldos dos municípios com ambos "
+    "os turnos comparáveis, não uma totalização oficial quando há cobertura parcial. "
+    "A seta mostra variação relativa; virada efetiva exige troca do sinal do saldo."
+)
+
 st.subheader("Saldos e variações")
-st.dataframe(result,width="stretch",hide_index=True)
-st.download_button("Exportar CSV",result.write_csv().encode("utf-8-sig"),
-                   file_name=f"deltas_{year}_{uf}.csv",mime="text/csv")
+table_options = ["Município", "Estado"]
+if zone_view is not None:
+    table_options.append("Zona no município (aproximada)")
+table_level = st.selectbox("Detalhamento da tabela", table_options)
+selection = {
+    "Município": municipal_view,
+    "Estado": state_view,
+    "Zona no município (aproximada)": zone_view,
+}[table_level]
+if selection is None or selection.is_empty():
+    st.info("Sem regiões correspondentes ao filtro.")
+else:
+    st.dataframe(selection, width="stretch", hide_index=True)
+    st.download_button(
+        "Exportar CSV", selection.write_csv().encode("utf-8-sig"),
+        file_name=f"deltas_{year}_{uf}_{table_level.split()[0]}.csv",
+        mime="text/csv",
+    )
