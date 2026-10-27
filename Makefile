@@ -6,6 +6,20 @@ FILE ?=
 DIR ?=
 LEVEL ?= municipio
 AUX ?= 1
+GEO_YEAR ?= 2025
+MALHA ?=
+CROSSWALK ?=
+SIMPLIFY_METERS ?= 1000
+SECTION_FILE ?=
+SECTIONS ?= 1
+ZONES ?= 0
+ZONE_UFS ?=
+SETORES ?=
+ZONE_SIMPLIFY_METERS ?= 30
+FORCE ?= 0
+SYNC ?= 1
+ALL ?= 0
+UFS ?= BR,PR
 BUNDLE ?= data/bundles/tse_raw_$(ANO)_bundle.zip
 ifeq ($(OS),Windows_NT)
 PYTHON ?= py -3
@@ -14,7 +28,7 @@ else
 PYTHON ?= python3
 VENV_PY := .venv/bin/python
 endif
-.PHONY: help bootstrap inspect import import-dir download ingest validate geo-import crosswalk run test doctor clean-processed prepare-data data-pack data-unpack data-scan
+.PHONY: help bootstrap inspect import import-dir download ingest validate geo-import crosswalk run test doctor clean-processed prepare-data data-pack data-unpack data-scan geo-setup geo-check preview offices refresh-data prepare-serving app-ready prepare-sections prepare-locations zones-setup
 help:
 	@echo "Atlas Eleitoral / Make como ponto de entrada"
 	@echo "  make bootstrap                           instala uv + requirements"
@@ -24,8 +38,22 @@ help:
 	@echo "  make download UF=BR                       baixa ZIP presidencial do TSE"
 	@echo "  make ingest ANO=2026 [UF=RR]            agrega votacao por municipio/zona"
 	@echo "  make crosswalk FILE=de_para.csv         importa correspondencia TSE/IBGE"
+	@echo "  make geo-import                         prepara malha municipal oficial (auto/cache)"
 	@echo "  make geo-import FILE=malha.gpkg          prepara GeoJSON municipal"
 	@echo "  make geo-import FILE=zonas.geojson LEVEL=zona"
+	@echo "  make geo-setup GEO_YEAR=2025            download oficial IBGE/TSE + normalizacao"
+	@echo "  make geo-setup MALHA=... CROSSWALK=...  importar malha e de/para locais"
+	@echo "  make geo-check ANO=2026                 conferir cobertura geocodigo TSE/IBGE"
+	@echo "  make offices ANO=2026                   listar cargos/turnos e checar BR"
+	@echo "  make refresh-data ANO=2026               concilia BR/PR com dados TSE oficiais"
+	@echo "  make refresh-data ANO=2026 ALL=1         verifica atualizacoes das 28 fontes"
+	@echo "  make prepare-serving ANO=2026            materializa Parquet pronto para mapa"
+	@echo "  make prepare-sections ANO=2026           prepara votos por secao (preserva NR_SECAO)"
+	@echo "  make prepare-locations ANO=2026          geocodifica locais TSE oficiais"
+	@echo "  make zones-setup ANO=2026 [ZONE_UFS=SP,RJ] [SETORES=BR_setores_CD2022.zip]"
+	@echo "                                          areas APROXIMADAS de zona (setores IBGE 2022 + locais TSE)"
+	@echo "  make app-ready ANO=2026                  prepara fontes, geometria e dados para mapa"
+	@echo "  make preview                            abrir mapa com dados ja processados (parciais)"
 	@echo "  make prepare-data ANO=2026 DIR=C:/Downloads   le ZIPs de DIR e processa"
 	@echo "  make data-pack ANO=2026                 gera data/bundles/tse_raw_2026_bundle.zip"
 	@echo "  make data-unpack BUNDLE=arquivo.zip     extrai bundle para data/raw/ANO/"
@@ -61,8 +89,27 @@ ingest: bootstrap
 crosswalk: bootstrap
 	$(VENV_PY) -m mapa_eleicoes.cli crosswalk --file "$(FILE)"
 
+# Sem FILE, usa o mesmo setup oficial (com cache) de make geo-setup.
+# LEVEL=zona sem FILE falha de maneira explicita, sem inventar limites.
 geo-import: bootstrap
-	$(VENV_PY) -m mapa_eleicoes.cli geo-import --file "$(FILE)" --level $(LEVEL)
+	$(VENV_PY) -m mapa_eleicoes.geography import $(if $(strip $(FILE)),--file "$(FILE)",) --level $(LEVEL) --geo-year $(GEO_YEAR) --simplify-meters $(SIMPLIFY_METERS) $(if $(filter 1,$(FORCE)),--force,)
+
+# Operacao pontual, com cache: nao redescarrega 226 MB no make run.
+# MALHA/CROSSWALK podem apontar ZIPs/GeoJSON/CSV baixados manualmente.
+geo-setup: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.geography setup --geo-year $(GEO_YEAR) --simplify-meters $(SIMPLIFY_METERS) $(if $(MALHA),--malha "$(MALHA)",) $(if $(CROSSWALK),--crosswalk "$(CROSSWALK)",) $(if $(filter 1,$(FORCE)),--force,)
+
+geo-check: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.geography check --year $(ANO)
+
+# Conferencia de fontes oficiais prioritarias (BR e PR); as demais podem
+# ser verificadas por ALL=1. Nunca inventar segundo turno faltante.
+refresh-data: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.tse_sync --year $(ANO) --ufs "$(UFS)" $(if $(filter 1,$(ALL)),--all,) $(if $(filter 1,$(FORCE)),--force,)
+
+# Relatorio fiel aos CSV.gz locais: lista cargos/turnos/UF e situacao BR.
+offices: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.office_catalog --year $(ANO)
 
 validate: bootstrap
 	$(VENV_PY) -m mapa_eleicoes.cli validate --year $(ANO)
@@ -87,7 +134,42 @@ data-pack: bootstrap
 data-unpack: bootstrap
 	$(VENV_PY) -m mapa_eleicoes.pipeline unpack --year $(ANO) --bundle "$(BUNDLE)"
 
-run: prepare-data
+# Prepara Parquets estaveis, consumidos diretamente pelo Streamlit.
+prepare-serving: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.serving --year $(ANO)
+
+# Uma preparacao inicial por UF; shards/aggregate streaming com cache.
+prepare-sections: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.section_serving --year $(ANO)
+
+# Os pontos geograficos sao coordenadas de locais oficiais,
+# nao centroides municipais ou falsos poligonos de secao.
+prepare-locations: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.polling_locations --year $(ANO) $(if $(SECTION_FILE),--file "$(SECTION_FILE)",)
+
+# Areas APROXIMADAS de zona eleitoral (dentro do municipio e zona inteira
+# por UF): setores censitarios IBGE 2022 atribuidos a zona com mais secoes
+# nos locais TSE.
+# Exige locais (prepare-locations) e de/para (geo-setup). Sem SETORES,
+# baixa o ZIP oficial de cada UF do IBGE (com cache). Nao e limite oficial.
+zones-setup: bootstrap
+	$(VENV_PY) -m mapa_eleicoes.zone_geometry --year $(ANO) $(if $(ZONE_UFS),--ufs "$(ZONE_UFS)",) $(if $(SETORES),--setores "$(SETORES)",) --simplify-meters $(ZONE_SIMPLIFY_METERS)
+
+# make run instala geografia/BR/PR, processa ZIPs e so abre a interface
+# depois de materializar o catalogo. Sem dicas de Make na interface.
+.NOTPARALLEL: app-ready run
+app-ready: $(if $(filter 1,$(SYNC)),refresh-data,) geo-setup prepare-data
+	$(VENV_PY) -m mapa_eleicoes.serving --year $(ANO)
+	$(if $(filter 1,$(SECTIONS)),$(VENV_PY) -m mapa_eleicoes.section_serving --year $(ANO),@echo "[SKIP] Seções desativadas nesta execução")
+	$(if $(filter 1,$(SECTIONS)),$(VENV_PY) -m mapa_eleicoes.polling_locations --year $(ANO),@echo "[SKIP] Locais desativados nesta execução")
+	$(if $(filter 1,$(ZONES)),$(VENV_PY) -m mapa_eleicoes.zone_geometry --year $(ANO) $(if $(ZONE_UFS),--ufs "$(ZONE_UFS)",) $(if $(SETORES),--setores "$(SETORES)",) --simplify-meters $(ZONE_SIMPLIFY_METERS),@echo "[SKIP] Zonas aproximadas desativadas (ZONES=1 para gerar)")
+	$(VENV_PY) -m mapa_eleicoes.geography check --year $(ANO)
+
+run: app-ready
+	$(VENV_PY) -m streamlit run app.py
+
+# Preview deixa visualizar um conjunto local parcial sem reexecutar ZIPs.
+preview: prepare-serving
 	$(VENV_PY) -m streamlit run app.py
 
 test: bootstrap
