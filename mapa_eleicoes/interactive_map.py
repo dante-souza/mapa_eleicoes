@@ -16,11 +16,56 @@ from streamlit_folium import st_folium
 from pathlib import Path
 
 from mapa_eleicoes.map_navigation import (
-    municipality_at, should_render_sites, state_for_municipality, FOCUS_ZOOM,
+    municipality_at, municipalities_in_view, should_render_sites,
+    should_render_zones, state_for_municipality, FOCUS_ZOOM,
 )
 from mapa_eleicoes.section_map import (
     load_sections, load_locations, section_detail, site_feature_group,
 )
+from mapa_eleicoes.zone_map import load_zone_areas, zone_areas_available, zone_layer
+
+
+@st.cache_data(show_spinner=False)
+def _zone_areas(root: str, uf: str, stamp: float) -> gpd.GeoDataFrame | None:
+    """Cache por UF; `stamp` (mtime) invalida apos novo make zones-setup."""
+    return load_zone_areas(Path(root), uf)
+
+
+def _zone_overlay(
+    root: Path, municipal_shapes: gpd.GeoDataFrame, camera: dict,
+    zone_votes: pl.DataFrame | None, selected_number: str | None,
+) -> tuple[list[folium.FeatureGroup], int]:
+    """Zonas aproximadas das cidades visiveis (centro primeiro), uma camada por UF."""
+    if zone_votes is None or zone_votes.is_empty():
+        return [], 0
+    cities = municipalities_in_view(
+        municipal_shapes, camera.get("bounds"), camera.get("center")
+    )
+    if not cities:
+        return [], 0
+    wanted = set(cities)
+    names = {
+        f"{row['uf']}:{row['cd_municipio_tse']}": row["municipio"]
+        for row in zone_votes.select(["uf", "cd_municipio_tse", "municipio"])
+        .unique(subset=["uf", "cd_municipio_tse"]).iter_rows(named=True)
+    }
+    groups, total = [], 0
+    for uf in sorted({state_for_municipality(code) for code in cities} - {None}):
+        path = root / "geo" / "zonas" / f"zonas_municipio_{uf}.geojson"
+        if not path.is_file():
+            continue
+        areas = _zone_areas(str(root), uf, path.stat().st_mtime)
+        if areas is None or areas.empty:
+            continue
+        areas = areas.loc[[code in wanted for code in areas["codigo_ibge"]]]
+        group, count = zone_layer(
+            areas, zone_votes.filter(pl.col("uf") == uf),
+            names=names, selected_number=selected_number,
+        )
+        if group is not None:
+            groups.append(group)
+            total += count
+    return groups, total
 
 
 def render_explorer(
@@ -39,6 +84,7 @@ def render_explorer(
     candidate_number: str | None,
     detail: str,
     section_ready: bool,
+    zone_votes: pl.DataFrame | None = None,
 ) -> None:
     """Mantem o poligono mesmo quando ainda nao pode desenhar locais."""
     scope = (year, uf, cargo, turno, municipio, str(zona), mode, detail)
@@ -51,6 +97,18 @@ def render_explorer(
     geojson_layer = None
     report = None
     city_code = None
+    layers: list[folium.FeatureGroup] = []
+    zone_count = 0
+    selected = candidate_number if mode == "Votação de candidato" else None
+    if auto and should_render_zones(camera.get("zoom"), zone_areas_available(root)):
+        try:
+            zone_groups, zone_count = _zone_overlay(
+                root, municipal_shapes, camera, zone_votes, selected
+            )
+        except (ValueError, KeyError, OSError, pl.exceptions.PolarsError):
+            zone_groups, zone_count = [], 0
+            st.caption("As zonas desta área estão indisponíveis; os municípios continuam no mapa.")
+        layers.extend(zone_groups)
 
     if auto and should_render_sites(camera.get("zoom"), section_ready):
         city_code = municipality_at(municipal_shapes, camera.get("center"))
@@ -104,11 +162,11 @@ def render_explorer(
         height=700,
         use_container_width=True,
         returned_objects=[
-            "zoom", "center", "last_object_clicked",
+            "zoom", "center", "bounds", "last_object_clicked",
             "last_object_clicked_count",
         ],
         return_on_hover=False,
-        feature_group_to_add=geojson_layer,
+        feature_group_to_add=(layers + ([geojson_layer] if geojson_layer else [])) or None,
         zoom=camera.get("zoom"),
         center=camera.get("center"),
     )
@@ -120,6 +178,9 @@ def render_explorer(
         center = response.get("center")
         if isinstance(center, dict) and {"lat", "lng"} <= set(center):
             next_camera["center"] = center
+        bounds = response.get("bounds")
+        if isinstance(bounds, dict):
+            next_camera["bounds"] = bounds
 
         click = response.get("last_object_clicked")
         if isinstance(click, dict) and {"lat", "lng"} <= set(click):
@@ -141,6 +202,13 @@ def render_explorer(
                     st.rerun()
         st.session_state["atlas_explorer_view"] = next_camera
 
+    if zone_count:
+        st.caption(
+            f"{zone_count:,} zonas eleitorais nas cidades visíveis. Contornos "
+            "aproximados: setores censitários IBGE 2022 atribuídos à zona com "
+            "mais seções nos locais de votação do TSE; não são limites oficiais."
+            .replace(",", ".")
+        )
     if report:
         st.caption(
             f"Município {report['city']} · "
@@ -158,5 +226,6 @@ def render_explorer(
     else:
         st.caption(
             "Passe o mouse sobre um município para consultar os votos. "
-            "Clique ou aproxime para revelar os locais de votação e as seções."
+            "Clique ou aproxime para ver as zonas eleitorais; aproxime mais "
+            "para revelar os locais de votação e as seções."
         )

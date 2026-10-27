@@ -58,6 +58,41 @@ Se o arquivo nacional `votos_BR` e um arquivo estadual trouxerem o mesmo
 (UF, cargo, turno), vale o nacional e as linhas estaduais repetidas são
 descartadas, com aviso no painel.
 
+## Zonas eleitorais: área aproximada (setores IBGE 2022)
+
+Não existe malha oficial de zonas eleitorais. O Atlas deriva uma **área
+aproximada** da zona dentro de cada município, só com fontes oficiais:
+
+```
+setores IBGE 2022 (CD_SETOR, CD_MUN)   locais TSE (uf, município, zona, seção, lat/lon)
+            │                                      │
+            └────── ponto do local dentro do setor ┘
+                          │
+   setor → zona com MAIS SEÇÕES nos locais dentro dele (empate: menor nº)
+   setor sem local → zona do local mais próximo do MESMO município
+   local cujo ponto cai em outro município → descartado
+   município sem local georreferenciado → sem área (ausência)
+                          │
+   união por (UF, município TSE, zona) + simplificação de cobertura (30 m)
+                          │
+   data/geo/zonas/zonas_municipio_UF.geojson + manifest.json (método, hashes)
+```
+
+```bash
+make prepare-locations ANO=2026        # locais TSE (pré-requisito)
+make zones-setup ANO=2026 ZONE_UFS=SP  # baixa SP_setores_CD2022.zip do IBGE (cache)
+make zones-setup ANO=2026 SETORES=C:/Downloads/BR_setores_CD2022.zip  # arquivo local
+make run ZONES=1 ZONE_UFS=SP           # inclui as zonas no preparo do run
+```
+
+No modo **Automático**, a partir do zoom de cidade (ou ao clicar num
+município) aparecem as zonas dos municípios visíveis que têm mais de uma
+zona, com as mesmas cores do mapa (líder + diferença em p.p.) e tooltip com
+1º, 2º e diferença. Aproximando mais, surgem os locais de votação. Os
+contornos **não são limites oficiais**: cada setor censitário vai inteiro
+para uma zona, e eleitores votam em locais que podem ficar fora do bairro
+onde moram.
+
 ## Mapa por seção eleitoral
 
 O arquivo TSE `votacao_secao_2026_UF.zip` inclui `NR_ZONA` e
@@ -477,7 +512,7 @@ make geo-import FILE="C:/dados/zonas_RMSP.geojson" LEVEL=zona
 make run
 ```
 
-A aplicação **não inventa divisões de zona dentro de municípios**. Sem polígonos de zonas, apresenta o mapa por municípios e tabela por zona. Uma malha de zona precisa ter os atributos `UF`/`SG_UF` e `NR_ZONA` (ou equivalentes reconhecidos); no mapa municipal, `CD_MUN` / `CD_GEOCMU` / `codigo_ibge` com código IBGE de 7 dígitos. Nunca fazemos junção pelo nome do município.
+A aplicação **não inventa divisões de zona dentro de municípios** a partir de limites municipais. A única geometria de zona sem malha oficial é a *área aproximada* derivada de setores censitários IBGE 2022 + locais TSE (`make zones-setup`, ver seção abaixo), sempre rotulada como tal. Sem ela, apresenta o mapa por municípios e tabela por zona. Uma malha de zona precisa ter os atributos `UF`/`SG_UF` e `NR_ZONA` (ou equivalentes reconhecidos); no mapa municipal, `CD_MUN` / `CD_GEOCMU` / `codigo_ibge` com código IBGE de 7 dígitos. Nunca fazemos junção pelo nome do município.
 
 * Malha IBGE: <https://www.ibge.gov.br/geociencias/organizacao-do-territorio/malhas-territoriais/15774-malhas.html>
 * TSE/IBGE: <https://dadosabertos.tse.jus.br/dataset/codigos-oficiais-de-uf-e-municipios-segundo-o-tse-e-o-ibge>

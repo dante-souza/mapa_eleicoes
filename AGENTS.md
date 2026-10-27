@@ -4,7 +4,7 @@
 2. Dependências: `make bootstrap` cria ambiente virtual, usa `pip install uv` no venv e em seguida `uv pip install -r requirements.txt`.
 3. Fonte de verdade: arquivos CSV/ZIP oficiais do TSE. Conservar ZIP de origem, documento e data da extração, não inventar dados nem afirmar cobertura nacional com amostra parcial.
 4. Dados em `data/raw`, `data/processed`, `data/geo`, `data/reference` não são versionados. O repositório guarda códigos, testes, modelos, documentação, manifests de formato (sem dados brutos).
-5. Não confundir `município` e `zona`: limite de município nunca deve ser representado como polígono de zona sem metadados geoespaciais próprios. Cruzamentos só por identificadores oficiais TSE/IBGE, nunca por nome.
+5. Não confundir `município` e `zona`: limite de município nunca deve ser representado como polígono de zona. A única geometria de zona aceita sem malha oficial é a **área aproximada** da regra 35. Cruzamentos só por identificadores oficiais TSE/IBGE, nunca por nome.
 6. Cada linha de votação por seção traz o número de votos de um votável/cargo/seção. Para brancos, nulos, abstenções e totais de comparecimento, respeitar a semântica de cada tabela e impedir dupla contagem entre cargos.
 7. Fluxo Git: trabalhar em branch isolada, abrir PR de revisão; não alterar diretamente a `main` e não efetuar merge sem aprovação humana. Não modificar CI sem aprovação.
 8. Testes padrão: `make test` e `make validate`. `make test-offline`/`make ingest-offline` são apenas diagnósticos no sandbox sem rede, não substituem a instalação real por `uv`.
@@ -13,7 +13,7 @@
 
 11. **`make run` e ponta a ponta.** Antes de iniciar a interface, executa `make prepare-data`: detecta ZIPs de `data/`, `data/incoming/` ou `data/raw/ANO/`, extrai bundles verificados, agrega arquivos `votacao_secao`, trata `munzona` como datasets independentes em Parquet e valida os votos. Nunca somar o mesmo voto a partir de fontes distintas.
 12. **Resiliência/reprodutibilidade:** nao sobrescrever brutos distintos, guardar SHA-256 e tamanho no manifesto, cachear resultados por origem e versao do pipeline; falhas impedem entrada no dashboard. Bundle gerado por `make data-pack` usa ZIP64 e manifesto; ZIP grande e outros artefatos de dados permanecem fora do Git.
-13. **Geografia nao e automaticamente fabricada:** crosswalk TSE/IBGE e malhas precisam de insumos oficiais separados; faltando geometrias, mostrar ausencia no mapa.
+13. **Geografia nao e automaticamente fabricada:** crosswalk TSE/IBGE e malhas precisam de insumos oficiais separados; faltando geometrias, mostrar ausencia no mapa. Exceção documentada: áreas aproximadas de zona derivadas de fontes oficiais (regra 35).
 
 14. **Malha oficial:** `make geo-setup` e `make geo-check` sao os alvos para configurar IBGE 2025 e correspondencia TSE/IBGE, preservando originais, hashes e datas. Nunca usar join por nome; municipio nao e zona eleitoral.
 15. **Preview com cobertura incompleta:** `make preview` apenas abre dados ja processados, sem afirmar cobertura completa e sem esconder falhas do `make run`. Nao altere a exigencia de integridade do preparo dos brutos.
@@ -23,7 +23,7 @@
 18. **Streamlit:** substituir `use_container_width` de elementos nativos por `width="stretch"`. Não confundir esse parâmetro com a API própria do `st_folium`.
 
 19. **Paleta eleitoral estável:** candidato/legenda 13 (PT) em vermelho #ff5555 e 22 (PL) em azul #3b82f6; nunca inferir por ordenacao no ranking, nem pelo nome Lula. Para demais numeros, cores fixas por prefixo de NR_VOTAVEL. Validar partidos no dataset oficial quando houver coligacao/candidatura excepcional.
-20. **Make geo-import sem arquivo:** ausência de FILE para municipios deve configurar fontes oficiais com cache; LEVEL=zona requer arquivo proprio, jamais fabricar zonas a partir de municipios. Cobrir os dois casos em testes.
+20. **Make geo-import sem arquivo:** ausência de FILE para municipios deve configurar fontes oficiais com cache; LEVEL=zona requer arquivo proprio, jamais fabricar zonas a partir de municipios. Cobrir os dois casos em testes. Áreas aproximadas de zona vêm só de `make zones-setup` (regra 35).
 
 21. **Filtros de cargos e turnos:** criar a lista de cargos apos filtrar por ano/UF, mas antes de aplicar filtro de turno. Exibir apenas turnos existentes para cargo selecionado. `make offices ANO=2026` deve mostrar cargos reais por turno/UF e diagnosticar `votos_BR.csv.gz`, sem inventar Presidente.
 
@@ -42,3 +42,4 @@
 32. **Performance e integridade:** resolver município com índice espacial GeoPandas; para pontos carregar somente o Parquet da UF e municípios em foco, sem varrer todos os arquivos no navegador. Clique fora de polígonos nunca vira município mais próximo; sem coordenadas oficiais não criar marcadores.
 33. **Sem dupla contagem BR/UF:** para cada (UF, cargo, turno) presente no arquivo nacional `votos_BR`, a fonte nacional prevalece e as linhas estaduais equivalentes são descartadas e contabilizadas em aviso; combinações só estaduais permanecem. Coberto por teste.
 34. **Seleção de município por código:** filtros e seletores usam UF + código TSE; o nome é apenas rótulo (há homônimos entre estados).
+35. **Zonas aproximadas (setores IBGE 2022):** `make zones-setup` atribui cada setor censitário do Censo 2022 à zona com mais seções em locais de votação TSE dentro dele; setor sem local recebe a zona do local mais próximo do mesmo município; local cujo ponto cai em outro município é descartado; município sem local georreferenciado fica sem área. Une setores por (UF, município TSE, zona), simplifica como cobertura e grava `data/geo/zonas/zonas_municipio_UF.geojson` + manifesto (método, hashes, contagens). Sempre rotular como **área aproximada, não limite oficial**, no tooltip e na legenda. No modo Automático, aparecem a partir do zoom de cidade para os municípios visíveis com mais de uma zona; municípios de zona única não ganham camada.
