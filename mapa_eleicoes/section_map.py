@@ -27,10 +27,11 @@ def load_sections(
     """Filtra no scan por UF/município antes de materializar em memória."""
     if uf == "Todas" or not municipio_codes:
         return pl.DataFrame()
-    files = sorted((data_root / "serving" / str(year) / "secoes").glob("secoes_*.parquet"))
-    if not files:
+    # Arquivos separados por UF: evita abrir os Parquets nacionais a cada zoom.
+    path = data_root / "serving" / str(year) / "secoes" / f"secoes_{uf}.parquet"
+    if not path.exists():
         return pl.DataFrame()
-    lazy = pl.scan_parquet([str(f) for f in files]).filter(
+    lazy = pl.scan_parquet(path).filter(
         (pl.col("uf") == uf)
         & pl.col("cd_municipio_tse").is_in(municipio_codes)
         & (pl.col("cargo") == cargo)
@@ -237,3 +238,27 @@ def render_site_points(
                 [float(lat_max) + 0.014, float(lon_max) + 0.014],
             ])
     return mapa, total, total - sites.height if truncated else 0
+
+
+def site_feature_group(
+    sections: pl.DataFrame, sites: pl.DataFrame, *,
+    selected_number: str | None = None,
+    max_sites: int = 1800,
+) -> tuple[folium.FeatureGroup, int, int]:
+    """Camada dinamica para st_folium sem reconstruir o mapa nacional.
+
+    O componente streamlit-folium remove a FeatureGroup anterior
+    quando os marcadores mudam ao aproximar/arrastar o mapa.
+    """
+    site_map, total, hidden = render_site_points(
+        sections, sites, selected_number=selected_number, max_sites=max_sites
+    )
+    layer = folium.FeatureGroup(name="Locais TSE por secao")
+    clusters = [
+        child for child in site_map._children.values()
+        if isinstance(child, MarkerCluster)
+    ]
+    if len(clusters) != 1:
+        raise ValueError("Camada de locais de votacao nao foi criada")
+    layer.add_child(clusters[0])
+    return layer, total, hidden
