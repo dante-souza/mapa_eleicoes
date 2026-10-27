@@ -52,10 +52,12 @@ Conferir os dois modos com UF=Todas e com UF selecionada, e também a mudança d
 ## Navegação hierárquica por zoom (revisão 27/10)
 
 A página principal recebe o nome **Atlas Eleitoral**, não mais "app": o
-entrypoint `atlas.py` define `st.Page("app.py", title="Atlas Eleitoral")`
-e a página "Deltas e viradas". O Makefile continua sendo a **única entrada**
-de execução (`make preview` / `make run`); `app.py` não foi renomeado
-nem teve sua lógica de apuração modificada.
+entrypoint **`Atlas_Eleitoral.py`** executa o `app.py` original no mesmo
+contexto do script, sem `st.navigation`/`st.Page`. O Streamlit identifica
+"Deltas e viradas" automaticamente no diretório `pages/`. O Makefile
+continua sendo a **única entrada** (`make preview` / `make run`), e a
+lógica de apuração, os eventos Folium, a câmera e o foco de cidade em
+`app.py` permanecem inalterados.
 
 Na visualização **Divisões + setas**, o zoom do Leaflet determina o nível
 das setas sem recarregar o Streamlit:
@@ -101,3 +103,21 @@ make preview ANO=2026
 Confirmar nome **Atlas Eleitoral** no menu, alternância de camadas,
 escala de setas com zoom (6 → 7 → 11), persistência do enquadramento ao
 aproximar/afastar e fallback municipal em UFs sem geometria de zona.
+
+
+### Regressão de foco municipal: restauração do entrypoint
+
+O wrapper `atlas.py` com `st.navigation` foi removido após o relato de
+que o clique no município não enquadrava mais a cidade na página
+principal. Para não arriscar o ciclo de vida dos callbacks do
+`st_folium`, o Makefile volta a iniciar um script de página diretamente,
+agora chamado `Atlas_Eleitoral.py`. Esse script executa literalmente
+o código existente de `app.py` no mesmo escopo; a navegação secundária
+é descoberta automaticamente pelo Streamlit em `pages/`.
+
+**Importante:** depois de atualizar a branch, **encerre o servidor
+Streamlit antigo** (`Ctrl+C`) e inicie novamente com `make preview
+ANO=2026`. Uma execução que já ativou `st.navigation` não volta para
+a navegação automática somente por hot reload; requer novo processo.
+O teste estrutural verifica a preservação de `CityFocus` e
+`render_explorer`, mas a confirmação de clique/zoom exige navegador.
