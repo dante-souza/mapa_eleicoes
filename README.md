@@ -42,12 +42,21 @@ https://g1.globo.com/politica/eleicoes/2026/mapas/mapa-de-apuracao/presidente/br
 # Gradiente eleitoral e detalhamento por seção (2026)
 
 O Atlas utiliza a **mesma paleta estável por número eleitoral** (PT/13 vermelho,
-PL/22 azul, demais partidos cores distintas), mas o preenchimento
-agora varia **continuamente entre 0% e 100% de votos nominais** do
-candidato no recorte representado. Tonalidade clara significa participação
-percentual menor; saturação maior significa porcentagem maior.
-A porcentagem calculada usa votos nominais válidos do cargo/turno,
-**não** aptos, abstenções ou todos os cargos somados.
+PL/22 azul, demais partidos cores distintas).
+
+- **Vencedor por região:** a cor é a do líder e a intensidade é a
+  **diferença em pontos percentuais para o 2º colocado**, em quatro classes
+  (0–5, 5–10, 10–20 e acima de 20 p.p.). Empate no topo tem cor neutra.
+  No 2º turno o líder sempre tem 50% ou mais; por isso a escala usa a
+  margem, e não o percentual do líder, que desperdiçaria metade da escala.
+- **Votação de candidato:** gradiente contínuo de 0% a 100% do candidato.
+- O tooltip mostra 1º e 2º colocados (percentual e votos) e a diferença.
+
+Percentuais usam votos **válidos** do cargo/turno (nominais + legenda),
+**não** brancos, nulos, aptos, abstenções ou todos os cargos somados.
+Se o arquivo nacional `votos_BR` e um arquivo estadual trouxerem o mesmo
+(UF, cargo, turno), vale o nacional e as linhas estaduais repetidas são
+descartadas, com aviso no painel.
 
 ## Mapa por seção eleitoral
 

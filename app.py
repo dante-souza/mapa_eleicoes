@@ -6,6 +6,7 @@ Nao converter Arrow/Polars para pandas nem fazer GeoDataFrame.merge com Polars.
 from __future__ import annotations
 
 import json
+from html import escape
 from pathlib import Path
 
 import folium
@@ -17,7 +18,9 @@ from mapa_eleicoes.geo_bridge import add_properties, ibge_code, zone_code
 from mapa_eleicoes.map_tiles import atlas_map
 from mapa_eleicoes.office_catalog import available_offices, available_turns, preferred_office
 from mapa_eleicoes.dashboard_options import round_label, geometry_options
-from mapa_eleicoes.vote_gradients import percentage_shade, legend_html
+from mapa_eleicoes.vote_gradients import percentage_shade, margin_shade, legend_html
+from mapa_eleicoes.results import region_results, br_number
+from mapa_eleicoes.vote_sources import combine_sources
 from mapa_eleicoes.interactive_map import render_explorer
 
 ROOT = Path(__file__).resolve().parent
@@ -35,13 +38,18 @@ st.markdown("""<style>
 
 
 @st.cache_data(show_spinner=False)
-def load_votes(year: int) -> pl.DataFrame:
-    """Consome exclusivamente dados finais Parquet gerados antes da interface."""
+def load_votes(year: int) -> tuple[pl.DataFrame, int]:
+    """Consome exclusivamente dados finais Parquet gerados antes da interface.
+
+    Fonte nacional (BR) e estaduais nunca somam o mesmo (uf, cargo, turno).
+    """
     folder = DATA / "serving" / str(year)
     files = sorted(folder.glob("votos_*.parquet"))
-    if not files:
-        return pl.DataFrame()
-    return pl.concat([pl.read_parquet(path) for path in files], how="vertical")
+    frames = {
+        path.stem.removeprefix("votos_"): pl.read_parquet(path)
+        for path in files
+    }
+    return combine_sources(frames)
 
 
 @st.cache_data(show_spinner=False)
@@ -111,17 +119,14 @@ def shape_for_votes(geometry: gpd.GeoDataFrame, votes: pl.DataFrame, level: str)
     return geometry, votes
 
 
-def winner_table(frame: pl.DataFrame) -> pl.DataFrame:
-    nominal = frame.filter(pl.col("tipo_voto") == "nominal")
-    if nominal.is_empty():
-        return pl.DataFrame()
-    grouped = nominal.group_by(["map_id", "numero", "candidato"]).agg(pl.col("votos").sum())
-    totals = grouped.group_by("map_id").agg(pl.col("votos").sum().alias("total_validos"))
+def _place_line(rank: int, name: object, pct: object, votes: object) -> str:
+    """Linha de tooltip: '1º NOME — 80,80% · 12.345 votos'. Texto escapado,
+    pois o tooltip do Leaflet e inserido como HTML."""
+    if not name:
+        return "—"
     return (
-        grouped.join(totals, on="map_id", how="left")
-        .with_columns((100.0 * pl.col("votos") / pl.col("total_validos")).alias("pct"))
-        .sort(["map_id", "votos", "numero"], descending=[False, True, False])
-        .unique(subset=["map_id"], keep="first", maintain_order=True)
+        f"{rank}º {escape(str(name))} — {br_number(pct)}% · "
+        f"{br_number(votes, 0)} votos"
     )
 
 
@@ -130,7 +135,7 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
              year: int, uf: str, cargo: str, turno: int,
              municipality: str, zone: int | str,
              detail: str, section_ready: bool):
-    winners = winner_table(data)
+    winners = region_results(data, ["map_id"])
     if winners.is_empty():
         st.info("Sem votos nominais para gerar mapa.")
         return
@@ -159,8 +164,9 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         winners = winners.join(candidate_votes, on="map_id", how="left").with_columns(
             pl.col("votos_candidato").fill_null(0),
         ).with_columns(
-            (100.0 * pl.col("votos_candidato") / pl.col("total_validos"))
-            .alias("destaque")
+            pl.when(pl.col("total_validos") > 0)
+            .then(100.0 * pl.col("votos_candidato") / pl.col("total_validos"))
+            .otherwise(None).alias("destaque")
         )
 
     keys = set(data.get_column("map_id").drop_nulls().to_list())
@@ -170,10 +176,9 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         return
     # Fronteira estavel: conversao Polars -> registros Python tipados (nao DataFrame pandas).
     attributes = {
-        "candidato": "Sem dados",
-        "numero": "",
-        "votos": 0,
-        "pct": 0.0,
+        "candidato_1": None, "numero_1": "", "votos_1": 0, "pct_1": None,
+        "candidato_2": None, "votos_2": 0, "pct_2": None,
+        "margem_pp": None, "empate": False,
     }
     if mode == "Votação de candidato" and selected:
         attributes["destaque"] = 0.0
@@ -194,15 +199,31 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         str(name_by_code.get(str(value), value)) for value in joined["map_id"]
     ]
     display["codigo_tooltip"] = [str(value) for value in joined["map_id"]]
-    display["vencedor"] = [str(value or "Sem dados") for value in joined["candidato"]]
-    display["votos_vencedor"] = [int(value or 0) for value in joined["votos"]]
-    display["percentual_vencedor"] = [round(float(value or 0), 2) for value in joined["pct"]]
+    display["primeiro"] = [
+        _place_line(1, name, pct, votes) if name else "Sem dados"
+        for name, pct, votes in zip(joined["candidato_1"], joined["pct_1"], joined["votos_1"])
+    ]
+    display["segundo"] = [
+        _place_line(2, name, pct, votes)
+        for name, pct, votes in zip(joined["candidato_2"], joined["pct_2"], joined["votos_2"])
+    ]
+    display["margem"] = [
+        "Empate" if tie else (
+            "—" if br_number(margin, 1) == "—" else f"{br_number(margin, 1)} p.p."
+        )
+        for tie, margin in zip(joined["empate"], joined["margem_pp"])
+    ]
     if "destaque" in attributes:
-        display["destaque"] = [round(float(value or 0), 2) for value in joined["destaque"]]
+        display["destaque"] = [
+            f"{br_number(value)}%" for value in joined["destaque"]
+        ]
     geojson = json.loads(display.to_json(drop_id=True))
     color_by_key = dict(zip(joined["map_id"], [
-        percentage_shade(number, pct)
-        for number, pct in zip(joined["numero"], joined["pct"])
+        margin_shade(number, margin, bool(tie)) if name else "#44475a"
+        for number, margin, tie, name in zip(
+            joined["numero_1"], joined["margem_pp"],
+            joined["empate"], joined["candidato_1"],
+        )
     ]))
     highlight = dict(zip(joined["map_id"], [
         float(value or 0) for value in joined.get("destaque", [0] * len(joined))
@@ -213,7 +234,6 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
 
     def style(feature):
         key = feature["properties"]["map_id"]
-        intensity = min(1.0, max(0.05, highlight.get(key, 0) / 100.0))
         return {
             "fillColor": percentage_shade(
                 selected_number, highlight.get(key, 0.0)
@@ -228,20 +248,20 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
     if level == "Município":
         fields.append("codigo_tooltip")
         aliases.append("Código IBGE")
-    fields.extend(["vencedor", "votos_vencedor", "percentual_vencedor"])
-    aliases.extend(["Mais votado", "Votos do líder", "% dos válidos"])
+    fields.extend(["primeiro", "segundo", "margem"])
+    aliases.extend(["Mais votado", "2º colocado", "Diferença"])
     if "destaque" in attributes:
         fields.append("destaque")
-        aliases.append("% do candidato")
+        aliases.append(f"{escape(str(selected))} (% válidos)")
     folium.GeoJson(
         geojson, name="Resultados", style_function=style,
         highlight_function=lambda _: {"weight": 1.5, "color": "#f8f8f2"},
         tooltip=folium.GeoJsonTooltip(fields=fields, aliases=aliases, sticky=False),
     ).add_to(map_view)
     map_view.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
-    map_view.get_root().html.add_child(
-        folium.Element(legend_html("percentual"))
-    )
+    map_view.get_root().html.add_child(folium.Element(legend_html(
+        "percentual" if mode == "Votação de candidato" else "margem"
+    )))
     render_explorer(
         map_view, geometry, crosswalk() if level == "Município" else None,
         root=DATA, year=year, uf=uf, cargo=cargo, turno=turno,
@@ -262,7 +282,7 @@ if not years:
 
 with st.sidebar:
     year = st.selectbox("Eleição", years)
-    votes = load_votes(year)
+    votes, overlapping_rows = load_votes(year)
     catalog = load_catalog(year)
     if votes.is_empty():
         st.info("Ainda nao ha resultados eleitorais carregados para este ano.")
@@ -303,10 +323,30 @@ with st.sidebar:
             f"Para a UF selecionada, apenas {cargos[0]} esta disponivel "
             "no conjunto carregado."
         )
-    municipality = st.selectbox("Município",
-                                ["Todos"] + sorted(votes.get_column("municipio").unique().to_list()))
-    if municipality != "Todos":
-        votes = votes.filter(pl.col("municipio") == municipality)
+    # Selecao por codigo TSE + UF: nomes se repetem entre estados
+    # (ex.: "Bom Jesus"), entao o nome e apenas rotulo.
+    municipalities = (
+        votes.select(["uf", "cd_municipio_tse", "municipio"])
+        .unique(subset=["uf", "cd_municipio_tse"], keep="first")
+        .sort(["municipio", "uf"])
+    )
+    municipality_labels = {
+        (row["uf"], row["cd_municipio_tse"]): f'{row["municipio"]} ({row["uf"]})'
+        for row in municipalities.iter_rows(named=True)
+    }
+    municipality_key = st.selectbox(
+        "Município", [None] + list(municipality_labels),
+        format_func=lambda key: "Todos" if key is None else municipality_labels[key],
+    )
+    municipality = (
+        "Todos" if municipality_key is None
+        else municipality_labels[municipality_key]
+    )
+    if municipality_key is not None:
+        votes = votes.filter(
+            (pl.col("uf") == municipality_key[0])
+            & (pl.col("cd_municipio_tse") == municipality_key[1])
+        )
     zones = sorted(votes.get_column("zona").unique().to_list())
     zone = st.selectbox("Zona", ["Todas"] + zones)
     if zone != "Todas":
@@ -337,9 +377,10 @@ with st.sidebar:
         )
     mode = st.radio("Visualização", ["Vencedor por região", "Votação de candidato"])
     st.caption(
-        f"Legenda: 🔴 PT (13) · 🔵 PL (22) "
+        "Legenda: 🔴 PT (13) · 🔵 PL (22) "
         "· demais legendas com cores distintas. "
-        "A cor corresponde ao número eleitoral."
+        "No mapa de vencedor, a cor é do líder e a intensidade é a "
+        "diferença em pontos percentuais para o 2º colocado."
     )
     total_per_candidate = (
         votes.filter(pl.col("tipo_voto") == "nominal")
@@ -355,6 +396,12 @@ with st.sidebar:
 
 # Transparencia de cobertura calculada durante a preparacao do dataset.
 # Sao informacoes ao leitor do mapa, nunca instrucoes de terminal.
+if overlapping_rows:
+    st.caption(
+        f"{overlapping_rows:,} registros estaduais repetidos do arquivo "
+        "nacional foram desconsiderados para não contar votos em dobro."
+        .replace(",", ".")
+    )
 coverage = catalog.get("cobertura", {})
 if coverage:
     state_count = coverage.get("ufs_importadas", 0)
@@ -376,11 +423,12 @@ def total_votos(tipo: str) -> int:
     return int(votes.filter(pl.col("tipo_voto") == tipo).get_column("votos").sum() or 0)
 
 
-validos = total_votos("nominal")
+nominais = total_votos("nominal")
+validos = nominais + total_votos("legenda")
 brancos = total_votos("branco")
 nulos = total_votos("nulo")
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Votos nominais", f"{validos:,}".replace(",", "."))
+m1.metric("Votos válidos", f"{validos:,}".replace(",", "."))
 m2.metric("Brancos", f"{brancos:,}".replace(",", "."))
 m3.metric("Nulos", f"{nulos:,}".replace(",", "."))
 m4.metric("Zonas representadas", votes.select(["uf", "zona"]).unique().height)
@@ -421,10 +469,12 @@ with left:
 
 with right:
     st.subheader(f"{cargo} · {turno}º turno")
-    total = int(total_per_candidate.get_column("votos").sum() or 0)
     for record in total_per_candidate.head(12).iter_rows(named=True):
-        pct = 100 * record["votos"] / total if total else 0
-        st.markdown(f'**{record["candidato"]}** — {record["votos"]:,} votos · {pct:.2f}%')
+        pct = 100 * record["votos"] / validos if validos else 0
+        st.markdown(
+            f'**{record["candidato"]}** — {br_number(record["votos"], 0)} votos'
+            f' · {br_number(pct)}% dos válidos'
+        )
         st.progress(min(1.0, pct / 100))
     st.caption(
         f"{len(uf_opts)} UFs no conjunto consultado. "
@@ -432,11 +482,46 @@ with right:
     )
 
 st.subheader("Detalhamento por zona eleitoral")
+zone_keys = ["uf", "cd_municipio_tse", "municipio", "zona"]
+zone_results = region_results(votes, zone_keys)
+if zone_results.is_empty():
+    st.info("Sem votos nominais por zona neste recorte.")
+else:
+    blank_null = (
+        votes.filter(pl.col("tipo_voto").is_in(["branco", "nulo"]))
+        .group_by(zone_keys + ["tipo_voto"]).agg(pl.col("votos").sum())
+        .pivot(on="tipo_voto", index=zone_keys, values="votos")
+    )
+    for column in ("branco", "nulo"):
+        if column not in blank_null.columns:
+            blank_null = blank_null.with_columns(pl.lit(0, pl.Int64).alias(column))
+    zone_view = (
+        zone_results.join(blank_null, on=zone_keys, how="left")
+        .with_columns(pl.col("branco", "nulo").fill_null(0))
+        .sort(["uf", "municipio", "zona"])
+        .select(
+            pl.col("uf").alias("UF"),
+            pl.col("municipio").alias("Município"),
+            pl.col("zona").alias("Zona"),
+            pl.col("candidato_1").alias("1º colocado"),
+            pl.col("pct_1").round(2).alias("% 1º"),
+            pl.col("candidato_2").alias("2º colocado"),
+            pl.col("pct_2").round(2).alias("% 2º"),
+            pl.when(pl.col("empate")).then(None)
+            .otherwise(pl.col("margem_pp").round(2)).alias("Diferença (p.p.)"),
+            pl.col("empate").alias("Empate"),
+            pl.col("total_validos").alias("Válidos"),
+            pl.col("branco").alias("Brancos"),
+            pl.col("nulo").alias("Nulos"),
+        )
+    )
+    st.dataframe(zone_view, width="stretch", hide_index=True)
 table = (
     votes.group_by(["uf", "municipio", "zona", "cargo", "numero", "candidato", "tipo_voto"])
     .agg(pl.col("votos").sum())
     .sort("votos", descending=True)
 )
-st.dataframe(table, width="stretch", hide_index=True)
+with st.expander("Votos por candidato e zona (dados completos)"):
+    st.dataframe(table, width="stretch", hide_index=True)
 st.download_button("Exportar seleção CSV", table.write_csv().encode("utf-8-sig"),
                    file_name=f"atlas_{year}_turno{turno}.csv", mime="text/csv")

@@ -97,6 +97,9 @@ def test_official_coordinates_align_by_municipio_zona_secao_and_round(tmp_path):
     # 28 de 60 nominais ao numero 13, 32 ao 22; o lugar tende a azul.
     assert sites.row(0, named=True)["numero_lider"] == "22"
     assert sites.row(0, named=True)["pct_lider"] == pytest.approx(32/60*100)
+    # Margem do local sobre o 2o colocado alimenta a cor (mesma regra do mapa).
+    assert sites.row(0, named=True)["margem_pp"] == pytest.approx(4/60*100)
+    assert sites.row(0, named=True)["empate"] is False
     mapa, total, hidden = section_map.render_site_points(rows, sites)
     assert total == 1 and hidden == 0
     html = mapa.get_root().render()
