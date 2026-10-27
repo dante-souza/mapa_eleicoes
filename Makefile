@@ -6,7 +6,7 @@ FILE ?=
 DIR ?=
 LEVEL ?= municipio
 AUX ?= 1
-BUNDLE ?= data/tse_raw_$(ANO)_bundle.zip
+BUNDLE ?= data/bundles/tse_raw_$(ANO)_bundle.zip
 ifeq ($(OS),Windows_NT)
 PYTHON ?= py -3
 VENV_PY := .venv/Scripts/python.exe
