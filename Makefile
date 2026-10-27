@@ -166,11 +166,11 @@ app-ready: $(if $(filter 1,$(SYNC)),refresh-data,) geo-setup prepare-data
 	$(VENV_PY) -m mapa_eleicoes.geography check --year $(ANO)
 
 run: app-ready
-	$(VENV_PY) -m streamlit run atlas.py
+	$(VENV_PY) -m streamlit run Atlas_Eleitoral.py
 
 # Preview deixa visualizar um conjunto local parcial sem reexecutar ZIPs.
 preview: prepare-serving
-	$(VENV_PY) -m streamlit run atlas.py
+	$(VENV_PY) -m streamlit run Atlas_Eleitoral.py
 
 test: bootstrap
 	$(VENV_PY) -m pytest -q
@@ -192,7 +192,7 @@ ingest-offline:
 validate-offline:
 	$(PYTHON) -m mapa_eleicoes.cli validate --year $(ANO)
 compile-offline:
-	$(PYTHON) -m compileall -q mapa_eleicoes atlas.py app.py pages tests
+	$(PYTHON) -m compileall -q mapa_eleicoes Atlas_Eleitoral.py app.py pages tests
 .PHONY: import-offline
 import-offline:
 	$(PYTHON) -m mapa_eleicoes.cli import --file "$(FILE)" --year $(ANO)
