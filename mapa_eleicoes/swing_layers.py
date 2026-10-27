@@ -387,7 +387,12 @@ def _state_geography(
     for uf, geoms in sorted(by_uf.items()):
         # União territorial por UF evita desenhar milhares de divisas
         # municipais quando o mapa está afastado.
-        dissolved = shapely.union_all(geoms)
+        try:
+            dissolved = shapely.union_all(geoms)
+        except shapely.errors.GEOSException:
+            # Municípios com pequenas invalidezes topológicas podem
+            # interromper a união; corrigir as entradas, sem mudar dados.
+            dissolved = shapely.union_all([shapely.make_valid(g) for g in geoms])
         if dissolved.is_empty:
             continue
         if not dissolved.is_valid:
