@@ -5,9 +5,12 @@ Tudo no navegador, sem rerun:
 - zoom: quando a cidade sob o centro do mapa ocupa a tela (zoom em que ela
   cabe, limitado a ZONE_ZOOM), ela vira o foco; ao arrastar, o foco segue
   a cidade do centro;
-- afastar alem do zoom da cidade devolve as cores a todos os municipios.
+- afastar alem do zoom da cidade, o botao "Voltar" no mapa ou a tecla Esc
+  devolvem as cores a todos os municipios (o botao tambem volta ao
+  enquadramento inicial).
 
-As demais cidades ficam no cinza escuro do g1. O estilo e aplicado pela
+Com foco, as demais cidades ficam quase pretas e o mapa de fundo escurece
+(classe `atlas-focus` no container), para a cidade saltar aos olhos. O estilo e aplicado pela
 funcao de estilo da propria camada, entao o `resetStyle` do hover do folium
 mantem o apagado.
 """
@@ -21,21 +24,52 @@ from jinja2 import Template
 
 from mapa_eleicoes.map_navigation import ZONE_ZOOM
 
-# Cinza das areas fora de foco e borda escura (amostrados do g1).
-DIM_STYLE = {"fillColor": "#23221f", "fillOpacity": 1.0, "color": "#0f1010", "weight": 0.4}
-FOCUS_STYLE = {"color": "#ffffff", "weight": 2.6, "fillOpacity": 0.95}
+# Fora de foco: quase preto, com divisas apenas sugeridas.
+DIM_STYLE = {"fillColor": "#0e0e0f", "fillOpacity": 1.0, "color": "#232326", "weight": 0.4}
+FOCUS_STYLE = {"color": "#ffffff", "weight": 2.8, "fillOpacity": 1.0}
+
+# Fundo (tiles) escurecido enquanto ha foco; botao "Voltar" no estilo do mapa.
+FOCUS_CSS = """
+<style>
+.atlas-focus .leaflet-tile-pane { filter: brightness(.25); transition: filter .25s; }
+.leaflet-tile-pane { transition: filter .25s; }
+.atlas-back {
+  display: none; cursor: pointer; padding: 6px 12px; border-radius: 6px;
+  background: rgba(22,23,23,.92); color: #f8f8f2; border: 1px solid #555;
+  font: 600 13px sans-serif;
+}
+.atlas-focus .atlas-back { display: block; }
+.atlas-back:hover { background: #2a2a2e; }
+</style>
+"""
 
 
 class CityFocus(MacroElement):
     """Liga o foco de cidade a uma camada GeoJson com `map_id` por feicao."""
 
     _template = Template("""
+        {% macro header(this, kwargs) %}{{ this.css }}{% endmacro %}
         {% macro script(this, kwargs) %}
         (function (map, layer) {
             var DIM = {{ this.dim_json }}, FOCUS = {{ this.focus_json }};
             var AUTO_ZOOM = {{ this.auto_zoom }};
             var base = layer.options.style;
-            var focus = null, afterClick = false;
+            var focus = null, afterClick = false, home = null, before = null;
+            // Enquadramento inicial: depois do fit_bounds do proprio script.
+            setTimeout(function () { home = map.getBounds(); }, 0);
+
+            var Back = L.Control.extend({
+                options: {position: "topright"},
+                onAdd: function () {
+                    var div = L.DomUtil.create("div", "atlas-back");
+                    div.innerHTML = "&#8592; Voltar ao mapa completo";
+                    div.title = "Tirar o destaque (Esc)";
+                    L.DomEvent.disableClickPropagation(div);
+                    L.DomEvent.on(div, "click", function () { reset(true); });
+                    return div;
+                }
+            });
+            new Back().addTo(map);
 
             function idOf(l) { return l.feature && l.feature.properties.map_id; }
             function styleFor(feature) {
@@ -86,10 +120,28 @@ class CityFocus(MacroElement):
             function setFocus(id) {
                 if (id === focus) { return; }
                 focus = id;
+                var box = map.getContainer();
+                if (focus === null) { L.DomUtil.removeClass(box, "atlas-focus"); }
+                else { L.DomUtil.addClass(box, "atlas-focus"); }
                 apply();
             }
+            // Voltar: sem foco e, pelo botao, de volta ao enquadramento inicial.
+            // `suppress` evita que o moveend do proprio retorno reacenda a
+            // cidade que estiver no centro.
+            var suppress = false;
+            function reset(goHome) {
+                var target = before || home;
+                setFocus(null);
+                before = null;
+                if (goHome && target) { suppress = true; map.fitBounds(target); }
+            }
+            document.addEventListener("keydown", function (e) {
+                if (e.key === "Escape" && focus !== null) { reset(true); }
+            });
             layer.on("click", function (e) {
                 if (!idOf(e.layer)) { return; }
+                // "Voltar" retorna a vista de antes do primeiro clique.
+                if (focus === null) { before = map.getBounds(); }
                 setFocus(idOf(e.layer));
                 // O centro do enquadramento pode cair fora de cidade concava:
                 // o primeiro moveend (o do proprio enquadramento) nao troca o foco.
@@ -98,10 +150,11 @@ class CityFocus(MacroElement):
             });
             map.on("moveend", function () {
                 if (afterClick) { afterClick = false; return; }
+                if (suppress) { suppress = false; return; }
                 var zoom = map.getZoom();
                 if (focus !== null) {
                     var current = find(focus);
-                    if (!current || zoom < cityZoom(current) - 1) { setFocus(null); }
+                    if (!current || zoom < cityZoom(current) - 1) { setFocus(null); before = null; }
                 }
                 var under = cityAt(map.getCenter());
                 if (under && zoom >= cityZoom(under)) { setFocus(idOf(under)); }
@@ -117,6 +170,23 @@ class CityFocus(MacroElement):
         self.auto_zoom = int(auto_zoom)
         self.dim_json = json.dumps(DIM_STYLE)
         self.focus_json = json.dumps(FOCUS_STYLE)
+        self.css = FOCUS_CSS
+
+
+class FocusBackdrop(MacroElement):
+    """Cidade escolhida no seletor: fundo escurecido desde a carga do mapa."""
+
+    _template = Template("""
+        {% macro header(this, kwargs) %}{{ this.css }}{% endmacro %}
+        {% macro script(this, kwargs) %}
+        L.DomUtil.addClass({{ this._parent.get_name() }}.getContainer(), "atlas-focus");
+        {% endmacro %}
+    """)
+
+    def __init__(self):
+        super().__init__()
+        self._name = "FocusBackdrop"
+        self.css = FOCUS_CSS
 
 
 def context_layer(geometry_json: dict) -> folium.GeoJson:

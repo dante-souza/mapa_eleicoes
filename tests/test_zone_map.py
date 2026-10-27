@@ -59,7 +59,7 @@ def test_layer_colors_by_margin_and_skips_single_zone_cities():
     # Campinas tem uma unica zona: repetiria o municipio, entao fica fora.
     assert count == 2
     html = render(layer)
-    assert "Zona 1 \\u00b7 S\\u00c3O PAULO (SP)" in html
+    assert "Zona 1 \\u2014 S\\u00c3O PAULO (SP)" in html
     assert "aproximada" in html
     assert margin_shade("13", 40) in html      # zona 1: LULA +40 p.p.
     assert margin_shade("22", 4) in html       # zona 2: FLAVIO +4 p.p.
@@ -114,3 +114,13 @@ def render_with_pane(layer, pane):
     fmap.add_child(ZoomPanes({pane: None}))
     layer.add_to(fmap)
     return fmap.get_root().render()
+
+
+def test_zone_titles_carry_approximate_name():
+    labels = ({"SP:71072:1": "VILA MARIANA"}, {"SP:5": "62910"})
+    names = {"SP:71072": "SÃO PAULO", "SP:62910": "CAMPINAS"}
+    layer, _ = zone_layer(areas(), votes(), names=names, labels=labels)
+    html = render(layer)
+    assert "Zona 1 \\u00b7 VILA MARIANA \\u2014 S\\u00c3O PAULO (SP)" in html
+    layer, _ = district_layer(districts(), votes(), names=names, labels=labels)
+    assert "Zona 5 \\u00b7 CAMPINAS (SP)" in render(layer)

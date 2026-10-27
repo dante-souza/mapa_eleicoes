@@ -95,6 +95,12 @@ com 1º, 2º e diferença. O clique numa cidade carrega os locais de votação,
 que surgem ao aproximar mais. Tudo isso acontece no navegador: arrastar ou
 dar zoom não recarrega a página.
 
+Cada zona aparece com um **nome derivado** ao lado do número: o bairro com
+mais seções da zona (campo `NM_BAIRRO` dos locais do TSE) ou, para a zona
+inteira, o município com mais seções. O TSE não publica nome de zona nos
+dados abertos; quem já tinha `locais.parquet` precisa rodar
+`make prepare-locations ANO=2026` de novo para ganhar os bairros.
+
 O detalhamento **Zona eleitoral (aproximada)** (com UF escolhida) pinta a
 zona inteira, somando todos os municípios dela; clicar numa zona a
 seleciona no seletor "Zona" e a destaca com contorno cheio.

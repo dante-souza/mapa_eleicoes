@@ -24,7 +24,7 @@ SOURCE_URL = (
     "https://cdn.tse.jus.br/estatistica/sead/odsele/"
     "eleitorado_locais_votacao/eleitorado_local_votacao_{year}.zip"
 )
-REVISION = 1
+REVISION = 2  # 2: inclui NM_BAIRRO (nome aproximado das zonas)
 FIELDS = (
     "NR_TURNO", "SG_UF", "CD_MUNICIPIO", "NR_ZONA", "NR_SECAO",
     "NR_LOCAL_VOTACAO", "NM_LOCAL_VOTACAO", "DS_ENDERECO",
@@ -66,6 +66,8 @@ def normalize_location(row: dict) -> dict | None:
         "secao": secao, "turno": turno,
         "local": local, "nome_local": str(row.get("NM_LOCAL_VOTACAO", "")).strip(),
         "endereco": str(row.get("DS_ENDERECO", "")).strip(),
+        # Opcional no arquivo do TSE; ausente vira vazio (sem nome inventado).
+        "bairro": str(row.get("NM_BAIRRO") or "").strip(),
         "latitude": latitude, "longitude": longitude,
     }
 

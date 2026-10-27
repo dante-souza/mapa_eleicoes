@@ -37,6 +37,7 @@ from mapa_eleicoes.section_map import (
     load_locations, load_sections, section_detail, site_feature_group,
 )
 from mapa_eleicoes.zone_geometry import district_file, zone_file
+from mapa_eleicoes.zone_names import load_zone_labels
 from mapa_eleicoes.zone_map import (
     district_layer, load_districts, load_zone_areas, zone_at, zone_layer,
 )
@@ -51,6 +52,19 @@ MAP_HEIGHT = 700
 def _zone_areas(root: str, uf: str, stamp: float) -> gpd.GeoDataFrame | None:
     """Cache por UF; `stamp` (mtime) invalida apos novo make zones-setup."""
     return load_zone_areas(Path(root), uf)
+
+
+@st.cache_data(show_spinner=False)
+def zone_label_maps(root: str, year: int, stamp: float) -> tuple[dict[str, str], dict[str, str]]:
+    """Nomes aproximados das zonas; `stamp` (mtime de locais.parquet) invalida."""
+    return load_zone_labels(Path(root), year)
+
+
+def cached_zone_labels(root: Path, year: int) -> tuple[dict[str, str], dict[str, str]]:
+    path = root / "serving" / str(year) / "locais.parquet"
+    if not path.is_file():
+        return {}, {}
+    return zone_label_maps(str(root), year, path.stat().st_mtime)
 
 
 @st.cache_data(show_spinner=False)
@@ -130,6 +144,7 @@ def render_explorer(
     districts = None
     dynamic: list[folium.FeatureGroup] = []
     names = _names(district_votes if district_mode else zone_votes)
+    labels = cached_zone_labels(root, year)
     try:
         if district_mode:
             districts = _cached(_districts, district_file(root, uf), root, uf)
@@ -140,7 +155,7 @@ def render_explorer(
                     districts, district_votes if district_votes is not None
                     else pl.DataFrame(),
                     names=names, selected_number=selected,
-                    highlight_zone=highlight, pane=DISTRICT_PANE,
+                    highlight_zone=highlight, pane=DISTRICT_PANE, labels=labels,
                 )
                 if group is not None:
                     base_map.add_child(group)
@@ -158,7 +173,7 @@ def render_explorer(
                 group, zone_count = zone_layer(
                     areas, zone_votes.filter(pl.col("uf") == target_uf),
                     names=names, selected_number=selected,
-                    highlight_zone=highlight, pane=ZONE_PANE,
+                    highlight_zone=highlight, pane=ZONE_PANE, labels=labels,
                 )
                 if group is not None and uf != "Todas":
                     base_map.add_child(group)

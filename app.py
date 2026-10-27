@@ -21,8 +21,11 @@ from mapa_eleicoes.dashboard_options import round_label, geometry_options
 from mapa_eleicoes.vote_gradients import percentage_shade, margin_shade, legend_html
 from mapa_eleicoes.results import region_results, br_number
 from mapa_eleicoes.vote_sources import combine_sources
-from mapa_eleicoes.interactive_map import PENDING_ZONE, ZONE_DETAIL, render_explorer
-from mapa_eleicoes.map_focus import CityFocus, context_layer
+from mapa_eleicoes.interactive_map import (
+    PENDING_ZONE, ZONE_DETAIL, cached_zone_labels, render_explorer,
+)
+from mapa_eleicoes.zone_names import zone_label
+from mapa_eleicoes.map_focus import CityFocus, FocusBackdrop, context_layer
 from mapa_eleicoes.zone_geometry import UF_PREFIX
 from mapa_eleicoes.zone_map import districts_available
 
@@ -242,6 +245,9 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
     centroid = geometry.geometry.union_all().representative_point()
     bounds = geometry.total_bounds
     map_view = atlas_map([float(centroid.y), float(centroid.x)])
+    scope_ufs = data.get_column("uf").unique().to_list()
+    scope_uf = uf if uf != "Todas" else (scope_ufs[0] if len(scope_ufs) == 1 else None)
+    single_city = municipality != "Todos" and len(geometry) == 1
 
     def style(feature):
         key = feature["properties"]["map_id"]
@@ -250,9 +256,11 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
                 selected_number, highlight.get(key, 0.0)
             ) if mode == "Votação de candidato"
                          else color_by_key.get(key, "#44475a"),
-            # Cor cheia e borda escura fina, como no mapa de apuracao do g1.
+            # Cor cheia e borda escura fina, como no mapa de apuracao do g1;
+            # cidade escolhida no seletor ganha o contorno branco do foco.
             "fillOpacity": 1.0,
-            "color": "#161717", "weight": 0.45,
+            "color": "#ffffff" if single_city else "#161717",
+            "weight": 2.8 if single_city else 0.45,
         }
 
     fields = ["nome_tooltip"]
@@ -265,10 +273,10 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
     if "destaque" in attributes:
         fields.append("destaque")
         aliases.append(f"{escape(str(selected))} (% válidos)")
-    if level == "Município" and uf != "Todas":
+    if level == "Município" and scope_uf and (single_city or uf != "Todas"):
         # Recorte menor que a UF (municipio ou zona escolhidos): o resto da
         # UF aparece apagado, como no g1, em vez de sumir do mapa.
-        prefix = UF_PREFIX.get(uf, "")
+        prefix = UF_PREFIX.get(scope_uf, "")
         rest = all_geometry.loc[
             [str(code).startswith(prefix) and code not in keys
              for code in all_geometry["map_id"]]
@@ -283,6 +291,9 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
     if level == "Município" and detail != ZONE_DETAIL and len(geometry) > 1:
         # Clique/zoom acendem a cidade e apagam as demais (no navegador).
         map_view.add_child(CityFocus(results_layer))
+    elif single_city:
+        # Cidade escolhida no seletor: ja nasce em destaque, fundo escuro.
+        map_view.add_child(FocusBackdrop())
     map_view.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
     map_view.get_root().html.add_child(folium.Element(legend_html(
         "percentual" if mode == "Votação de candidato" else "margem"
@@ -364,10 +375,20 @@ with st.sidebar:
         (row["uf"], row["cd_municipio_tse"]): f'{row["municipio"]} ({row["uf"]})'
         for row in municipalities.iter_rows(named=True)
     }
+    if st.session_state.get("atlas_city_select") not in [None] + list(municipality_labels):
+        st.session_state["atlas_city_select"] = None
     municipality_key = st.selectbox(
         "Município", [None] + list(municipality_labels),
         format_func=lambda key: "Todos" if key is None else municipality_labels[key],
+        key="atlas_city_select",
     )
+    if municipality_key is not None:
+        def _back_to_all() -> None:
+            # Volta ao modo anterior ao destaque: todos os municipios.
+            st.session_state["atlas_city_select"] = None
+            st.session_state["atlas_zone_select"] = "Todas"
+        st.button("← Voltar para todos os municípios", on_click=_back_to_all,
+                  width="stretch")
     municipality = (
         "Todos" if municipality_key is None
         else municipality_labels[municipality_key]
@@ -387,7 +408,24 @@ with st.sidebar:
         st.session_state["atlas_zone_select"] = pending_zone
     if st.session_state.get("atlas_zone_select", "Todas") not in ["Todas"] + zones:
         st.session_state["atlas_zone_select"] = "Todas"
-    zone = st.selectbox("Zona", ["Todas"] + zones, key="atlas_zone_select")
+    # Nome aproximado ao lado do numero (bairro / municipio com mais secoes).
+    zone_names = cached_zone_labels(DATA, year)
+    city_names = {
+        f"{row['uf']}:{row['cd_municipio_tse']}": row["municipio"]
+        for row in votes_uf.select(["uf", "cd_municipio_tse", "municipio"])
+        .unique(subset=["uf", "cd_municipio_tse"]).iter_rows(named=True)
+    }
+    label_uf = municipality_key[0] if municipality_key else (uf if uf != "Todas" else None)
+    label_city = municipality_key[1] if municipality_key else None
+
+    def zone_option(value: object) -> str:
+        if value == "Todas" or label_uf is None:
+            return str(value)
+        name = zone_label(label_uf, value, label_city, *zone_names, city_names)
+        return f"{value} · {name}" if name else str(value)
+
+    zone = st.selectbox("Zona", ["Todas"] + zones, key="atlas_zone_select",
+                        format_func=zone_option)
     if zone != "Todas":
         votes = votes.filter(pl.col("zona") == zone)
     # Sem poligonos cartograficos reais de zonas, a interface sempre
@@ -545,14 +583,22 @@ else:
     for column in ("branco", "nulo"):
         if column not in blank_null.columns:
             blank_null = blank_null.with_columns(pl.lit(0, pl.Int64).alias(column))
-    zone_view = (
+    zone_table = (
         zone_results.join(blank_null, on=zone_keys, how="left")
         .with_columns(pl.col("branco", "nulo").fill_null(0))
         .sort(["uf", "municipio", "zona"])
+    )
+    zone_table = zone_table.with_columns(pl.Series("nome_zona", [
+        zone_label(row["uf"], row["zona"], row["cd_municipio_tse"], *zone_names, city_names)
+        for row in zone_table.select(["uf", "cd_municipio_tse", "zona"]).iter_rows(named=True)
+    ], dtype=pl.String))
+    zone_view = (
+        zone_table
         .select(
             pl.col("uf").alias("UF"),
             pl.col("municipio").alias("Município"),
             pl.col("zona").alias("Zona"),
+            pl.col("nome_zona").alias("Nome (aprox.)"),
             pl.col("candidato_1").alias("1º colocado"),
             pl.col("pct_1").round(2).alias("% 1º"),
             pl.col("candidato_2").alias("2º colocado"),

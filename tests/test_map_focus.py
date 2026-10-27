@@ -31,3 +31,16 @@ def test_context_layer_is_dim_and_not_interactive():
     html = fmap.get_root().render()
     assert '"interactive": false' in html
     assert DIM_STYLE["fillColor"] in html
+
+
+def test_back_control_esc_and_dark_backdrop():
+    from mapa_eleicoes.map_focus import FocusBackdrop
+    fmap = folium.Map(location=[0, 0])
+    layer = folium.GeoJson(FC).add_to(fmap)
+    fmap.add_child(CityFocus(layer))
+    html = fmap.get_root().render()
+    assert "Voltar ao mapa completo" in html and '"Escape"' in html
+    assert ".atlas-focus .leaflet-tile-pane { filter: brightness(.25)" in html
+    single = folium.Map(location=[0, 0])
+    single.add_child(FocusBackdrop())
+    assert '"atlas-focus")' in single.get_root().render()
