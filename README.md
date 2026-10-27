@@ -32,6 +32,40 @@ oficial de cores pelo TSE. Em casos especiais/coalizões, validar a
 legenda no dataset oficial de candidaturas.
 
 
+## Correção do seletor: cargos do primeiro turno
+
+**Problema encontrado na captura:** ao escolher `Turno 2`, o antigo painel
+filtrava todos os registros antes de construir a lista de cargos. Assim,
+os cargos disputados apenas no **primeiro turno** (Senador, Deputado
+Federal, Deputado Estadual/Distrital) desapareciam do seletor.
+A ausência de Presidente no segundo turno também pode ser uma ausência
+efetiva no arquivo `BR`, e deve ser verificada, não inventada.
+
+**Contrato novo:** ano → UF → **Cargo** → turnos disponíveis para o cargo
+→ município → zona. O padrão prioriza `Presidente` se estiver presente
+nos dados; caso contrário usa o primeiro cargo disponível. Para cargos
+de turno único, só aparece `1`. Isto não cria dados ausentes.
+
+Diagnóstico com o Makefile (sem processar ZIPs de novo):
+
+```powershell
+git fetch origin --prune
+git switch feature/geo-ibge-tse-crosswalk
+git merge --ff-only origin/feature/geo-ibge-tse-crosswalk
+
+make test
+make offices ANO=2026
+make preview
+```
+
+`make offices` percorre os CSV.gz de `data/processed/2026` e informa
+os cargos encontrados em cada turno e quantidade de UFs/arquivos.
+A linha `[OFFICES] Fonte BR` mostra os cargos do arquivo nacional
+`votos_BR.csv.gz`. Se este faltar, o comando avisa; para recuperá-lo
+use `make download ANO=2026 UF=BR` e `make ingest ANO=2026 UF=BR`.
+A presença de um arquivo **não garante** Presidente nos dois turnos:
+o catálogo reflete somente as linhas disponíveis.
+
 # Atlas Eleitoral — TSE, zonas eleitorais e mapas interativos
 
 Protótipo independente em Python que agrupa votos de **seções → zonas → municípios**, com dados do TSE, **Polars** para dados eleitorais, GeoPandas para preparar geometrias e Folium para navegação no mapa.
