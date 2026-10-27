@@ -1,13 +1,12 @@
-"""Camadas de deltas no Folium, separadas da apuração existente.
+"""Mapa hierárquico de deltas: estados -> municípios -> zonas pelo zoom.
 
-Dois controles visuais alternáveis no próprio Leaflet (sem rerun Streamlit):
-- limites transparentes + setas esquemáticas;
-- regiões preenchidas pelo sinal do delta, sem setas.
-
-Os polígonos são carregados uma única vez. As setas são um GeoJSON vetorial.
+Mapa e seleção de camadas rodam inteiramente no Leaflet. O Streamlit não
+recebe zoom/centro do cliente. Apenas geometria oficial municipal e
+aproximações de zona produzidas pelo pipeline do Atlas são representadas.
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from html import escape
 from math import sqrt
 
@@ -19,111 +18,147 @@ from jinja2 import Template
 from mapa_eleicoes.geo_payload import BoundedGeoJson, leaflet_bounds, rounded_geometries
 from mapa_eleicoes.map_tiles import atlas_map
 from mapa_eleicoes.party_colors import PL_BLUE, PT_RED
+from mapa_eleicoes.zone_geometry import UF_PREFIX
 
 NEUTRAL = "#6272a4"
 BORDER = "#a6a6b5"
 NO_DATA = "#44475a"
+STATE_MAX_ZOOM = 7      # zoom < 7: uma seta por UF
+ZONE_MIN_ZOOM = 11     # zoom >= 11: zonas, quando há geometria preparada
 
 
-class ExclusiveDeltaOverlays(MacroElement):
-    """Dois modos visuais com uma única geometria municipal/zonal carregada.
-
-    Polígonos permanecem no mapa; o controle muda apenas o estilo e a
-    visibilidade do GeoJSON vetorial de setas, sem rerun nem tiles adicionais.
-    """
+class DeltaZoomLayers(MacroElement):
+    """Exclusividade dos modos e zoom hierárquico, sem rerun do Streamlit."""
 
     _template = Template("""
     {% macro script(this, kwargs) %}
-    (function(map, outlineGroup, filledGroup, polygons) {
-        function outlineStyle(feature) {
+    (function(map, outlines, filled, municipal, zones,
+              stateArrows, cityArrows, zoneArrows, low, high) {
+        var mode = "arrows";
+        function transparent(feature) {
             return {fillColor: "#6272a4", fillOpacity: 0,
-                    color: "#a6a6b5", weight: 0.8};
+                    color: "#a6a6b5", weight: 0.75};
         }
-        function filledStyle(feature) {
+        function painted(feature) {
             return {fillColor: feature.properties.cor,
                     fillOpacity: feature.properties.com_dados ? 0.72 : 0,
-                    color: "#161717", weight: 0.5};
+                    color: "#161717", weight: 0.48};
         }
-        map.on("overlayadd", function(event) {
-            if (event.layer === filledGroup) {
-                if (map.hasLayer(outlineGroup)) { map.removeLayer(outlineGroup); }
-                polygons.setStyle(filledStyle);
-            } else if (event.layer === outlineGroup) {
-                if (map.hasLayer(filledGroup)) { map.removeLayer(filledGroup); }
-                polygons.setStyle(outlineStyle);
+        function toggle(group, child, active) {
+            if (!child) { return; }
+            if (active && !group.hasLayer(child)) { group.addLayer(child); }
+            else if (!active && group.hasLayer(child)) { group.removeLayer(child); }
+        }
+        function sync() {
+            var zoom = map.getZoom();
+            var filledActive = map.hasLayer(filled);
+            var arrowsActive = map.hasLayer(outlines);
+            var zoneActive = !!zones && zoom >= high;
+            // Não sacrificar informação municipal onde não há zonas preparadas.
+            var municipalVisible = filledActive || zoom >= low;
+            if (municipalVisible && !map.hasLayer(municipal)) {
+                map.addLayer(municipal);
+            } else if (!municipalVisible && map.hasLayer(municipal)) {
+                map.removeLayer(municipal);
             }
-        });
-        map.on("overlayremove", function(event) {
-            if (event.layer === filledGroup && !map.hasLayer(outlineGroup)) {
-                polygons.setStyle(outlineStyle);
+            if (zones) {
+                if (zoneActive && !map.hasLayer(zones)) { map.addLayer(zones); }
+                else if (!zoneActive && map.hasLayer(zones)) { map.removeLayer(zones); }
+                zones.setStyle(filledActive ? painted : transparent);
             }
+            // No zoom de zonas, manter contorno municipal, sem preencher.
+            municipal.setStyle(filledActive && !zoneActive ? painted : transparent);
+            var scale = zoom < low ? "state" :
+                       (zoneActive && zoneArrows ? "zone" : "city");
+            toggle(outlines, stateArrows, arrowsActive && scale === "state");
+            toggle(outlines, cityArrows, arrowsActive && scale === "city");
+            toggle(outlines, zoneArrows, arrowsActive && scale === "zone");
+        }
+        map.on("overlayadd", function(e) {
+            if (e.layer === filled && map.hasLayer(outlines)) {
+                map.removeLayer(outlines);
+            } else if (e.layer === outlines && map.hasLayer(filled)) {
+                map.removeLayer(filled);
+            }
+            sync();
         });
-    })({{ this._parent.get_name() }}, {{ this.outlines.get_name() }},
-       {{ this.filled.get_name() }}, {{ this.polygons.get_name() }});
+        map.on("overlayremove", sync);
+        map.on("zoomend", sync);
+        sync();
+    })({{ this._parent.get_name() }},
+       {{ this.outlines.get_name() }}, {{ this.filled.get_name() }},
+       {{ this.municipal.get_name() }},
+       {% if this.zones %}{{ this.zones.get_name() }}{% else %}null{% endif %},
+       {% if this.state_arrows %}{{ this.state_arrows.get_name() }}{% else %}null{% endif %},
+       {% if this.city_arrows %}{{ this.city_arrows.get_name() }}{% else %}null{% endif %},
+       {% if this.zone_arrows %}{{ this.zone_arrows.get_name() }}{% else %}null{% endif %},
+       {{ this.low }}, {{ this.high }});
     {% endmacro %}
     """)
 
     def __init__(
         self, outlines: folium.FeatureGroup, filled: folium.FeatureGroup,
-        polygons: folium.GeoJson,
-    ):
+        municipal: folium.GeoJson, zones: folium.GeoJson | None,
+        state_arrows: folium.FeatureGroup | None,
+        city_arrows: folium.FeatureGroup | None,
+        zone_arrows: folium.FeatureGroup | None,
+    ) -> None:
         super().__init__()
-        self._name = "ExclusiveDeltaOverlays"
+        self._name = "DeltaZoomLayers"
         self.outlines = outlines
         self.filled = filled
-        self.polygons = polygons
+        self.municipal = municipal
+        self.zones = zones
+        self.state_arrows = state_arrows
+        self.city_arrows = city_arrows
+        self.zone_arrows = zone_arrows
+        self.low = STATE_MAX_ZOOM
+        self.high = ZONE_MIN_ZOOM
 
 
 def _display_int(value: object, *, sign: bool = False) -> str:
     if value is None:
         return "—"
-    number = int(value)
-    return f"{number:+,}" if sign else f"{number:,}"
+    value = int(value)
+    return f"{value:+,}" if sign else f"{value:,}"
 
 
-def _vote_properties(vote: dict | None, *, approx_zone: bool) -> dict[str, str]:
+def _vote_properties(vote: dict | None, *, approx_zone: bool) -> dict:
     if vote is None:
-        return {
-            "regiao": "Sem dados comparáveis", "delta": "—",
-            "saldo1": "—", "saldo2": "—", "lula": "—",
-            "flavio": "—", "virada": "—", "cor": NO_DATA,
-            "com_dados": False,
-        }
+        return dict(regiao="Sem dados comparáveis", delta="—", saldo1="—",
+                    saldo2="—", lula="—", flavio="—", virada="—",
+                    cor=NO_DATA, com_dados=False)
     delta = int(vote["delta"])
-    name = escape(str(vote["municipio"]))
+    region = escape(str(vote["municipio"]))
     if approx_zone:
-        name += f' · Zona {int(vote["zona"])} (área aproximada)'
-    return {
-        "regiao": name,
-        "delta": _display_int(delta, sign=True),
-        "saldo1": _display_int(vote["saldo_1t"], sign=True),
-        "saldo2": _display_int(vote["saldo_2t"], sign=True),
-        "lula": _display_int(vote["delta_a"], sign=True),
-        "flavio": _display_int(vote["delta_b"], sign=True),
-        "virada": escape(str(vote["virada"])),
-        "cor": PT_RED if delta > 0 else PL_BLUE if delta < 0 else NEUTRAL,
-        "com_dados": True,
-    }
+        region += f' · Zona {int(vote["zona"])} (área aproximada)'
+    return dict(
+        regiao=region, delta=_display_int(delta, sign=True),
+        saldo1=_display_int(vote["saldo_1t"], sign=True),
+        saldo2=_display_int(vote["saldo_2t"], sign=True),
+        lula=_display_int(vote["delta_a"], sign=True),
+        flavio=_display_int(vote["delta_b"], sign=True),
+        virada=escape(str(vote["virada"])),
+        cor=PT_RED if delta > 0 else PL_BLUE if delta < 0 else NEUTRAL,
+        com_dados=True,
+    )
 
 
-def _arrow_geometry(point, delta: int, maximum: int, bounds: tuple) -> dict:
-    """Desenha haste + duas pontas como UMA MultiLineString.
-
-    Direção é simbólica (esquerda/direita), NÃO deslocamento geográfico;
-    tamanho relativo a |delta| e limitado ao tamanho da região.
-    """
+def _arrow_geometry(
+    point, delta: int, maximum: int, bounds: tuple, *,
+    size_cap: float = 0.06, size_floor: float = 0.0012, fraction: float = 0.26,
+) -> dict:
+    """Uma seta geográfica vetorial; sentido é simbólico, não fluxo eleitoral."""
     west, south, east, north = bounds
     span = max(0.0, min(east - west, north - south))
-    size = min(0.06, max(0.0012, span * 0.26))
+    size = min(size_cap, max(size_floor, span * fraction))
     size *= 0.25 + 0.75 * sqrt(abs(delta) / max(1, maximum))
     direction = -1 if delta > 0 else 1
     x, y = float(point.x), float(point.y)
     tip_x, tip_y = x + direction * size, y + size
-    # Ponta triangular aberta, orientada na direção da haste.
     dx, dy = direction / sqrt(2), 1.0 / sqrt(2)
     px, py = -dy, dx
-    head = size * 0.48
-    wing = size * 0.33
+    head, wing = size * 0.48, size * 0.33
     p1 = [tip_x - dx * head + px * wing, tip_y - dy * head + py * wing]
     p2 = [tip_x - dx * head - px * wing, tip_y - dy * head - py * wing]
     return {
@@ -136,94 +171,182 @@ def _arrow_geometry(point, delta: int, maximum: int, bounds: tuple) -> dict:
     }
 
 
-def delta_map(geo: gpd.GeoDataFrame, *, approx_zone: bool = False) -> folium.Map:
-    """Constrói dois overlays; o primeiro começa ativo e o outro desligado.
+def _tooltip_style() -> str:
+    return ("background:#282a36;color:#f8f8f2;border:1px solid #6272a4;"
+            "border-radius:6px;padding:9px;max-width:300px;"
+            "white-space:normal;font:12px/1.35 sans-serif;")
 
-    geo tem geometry e _vote (dicionário de swing_results ou None).
-    Geometrias sem voto continuam como contornos, mas não ganham delta
-    artificial. O tile-base nunca é escondido pelo seletor de camadas.
-    """
-    if geo.empty:
-        raise ValueError("Não há geometria para desenhar.")
-    bounds = leaflet_bounds(geo)
-    west, south, east, north = map(float, geo.total_bounds)
-    map_view = atlas_map([(south + north) / 2, (west + east) / 2])
-    maximum = max((abs(int(v["delta"])) for v in geo["_vote"] if v is not None), default=1) or 1
 
-    # Serializa coordenadas com 4 casas como no mapa principal: evita duplicar
-    # MB de GeoJSON com 15 casas decimais para ~5.570 municípios.
-    geometries = rounded_geometries(geo[["_key", "geometry"]], key="_key")
-    polygons = []
-    arrows = []
-    for key, geometry, vote in zip(geo["_key"], geo.geometry, geo["_vote"]):
-        if geometry is None or geometry.is_empty or str(key) not in geometries:
-            continue
-        props = _vote_properties(vote, approx_zone=approx_zone)
-        polygons.append({
-            "type": "Feature",
-            "geometry": geometries[str(key)],
-            "properties": props,
-        })
-        if vote is not None and int(vote["delta"]) != 0:
-            point = geometry.representative_point()
-            arrows.append({
-                "type": "Feature",
-                "geometry": _arrow_geometry(point, int(vote["delta"]), maximum, geometry.bounds),
-                "properties": {
-                    "cor": props["cor"],
-                    "regiao": props["regiao"],
-                    "delta": props["delta"],
-                },
+def _polygon_tooltip() -> folium.GeoJsonTooltip:
+    return folium.GeoJsonTooltip(
+        fields=["regiao", "saldo1", "saldo2", "delta", "lula", "flavio", "virada"],
+        aliases=["Região", "Saldo 1ºT", "Saldo 2ºT",
+                 "Δ saldo", "Δ Lula", "Δ Flávio", "Virada"],
+        sticky=False, style=_tooltip_style(),
+    )
+
+
+def _polygons(geo: gpd.GeoDataFrame, *, approx_zone: bool) -> dict:
+    geometry_cache = rounded_geometries(geo[["_key", "geometry"]], key="_key")
+    features = []
+    for key, vote in zip(geo["_key"], geo["_vote"]):
+        data = geometry_cache.get(str(key))
+        if data is not None:
+            features.append({
+                "type": "Feature", "geometry": data,
+                "properties": _vote_properties(vote, approx_zone=approx_zone),
             })
+    return {"type": "FeatureCollection", "features": features}
 
-    polygon_collection = {"type": "FeatureCollection", "features": polygons}
-    tooltip_style = (
-        "background:#282a36;color:#f8f8f2;border:1px solid #6272a4;"
-        "border-radius:6px;padding:9px;max-width:310px;"
-        "white-space:normal;font:12px/1.35 sans-serif;"
-    )
 
-    def tooltip():
-        return folium.GeoJsonTooltip(
-            fields=["regiao", "saldo1", "saldo2", "delta", "lula", "flavio", "virada"],
-            aliases=["Região", "Saldo 1ºT", "Saldo 2ºT", "Δ saldo",
-                     "Δ Lula", "Δ Flávio", "Virada"],
-            sticky=False, style=tooltip_style,
-        )
+def _arrow_collection(
+    geo: gpd.GeoDataFrame, *, size_cap: float = .06,
+    size_floor: float = .0012, fraction: float = .26,
+) -> dict:
+    values = [v for v in geo["_vote"] if v is not None and int(v["delta"]) != 0]
+    maximum = max((abs(int(v["delta"])) for v in values), default=1)
+    features = []
+    for geometry, vote in zip(geo.geometry, geo["_vote"]):
+        if (geometry is None or geometry.is_empty or vote is None
+                or not int(vote["delta"])):
+            continue
+        props = _vote_properties(vote, approx_zone="zona" in vote)
+        features.append({
+            "type": "Feature",
+            "geometry": _arrow_geometry(
+                geometry.representative_point(), int(vote["delta"]), maximum,
+                geometry.bounds, size_cap=size_cap, size_floor=size_floor,
+                fraction=fraction,
+            ),
+            "properties": {"cor": props["cor"], "regiao": props["regiao"],
+                           "delta": props["delta"], "virada": props["virada"]},
+        })
+    return {"type": "FeatureCollection", "features": features}
 
-    outline_group = folium.FeatureGroup(
+
+def _state_arrows(municipal: gpd.GeoDataFrame, states: list[dict]) -> dict:
+    """Uma seta por UF com votos comparáveis; nunca faz union de polígonos."""
+    prefix_to_uf = {prefix: uf for uf, prefix in UF_PREFIX.items()}
+    geography = defaultdict(list)
+    for code, geometry in zip(municipal["_key"], municipal.geometry):
+        if geometry is None or geometry.is_empty:
+            continue
+        uf = prefix_to_uf.get(str(code)[:2])
+        if uf:
+            geography[uf].append(geometry)
+    records = [row for row in states if row["uf"] in geography and int(row["delta"]) != 0]
+    maximum = max((abs(int(row["delta"])) for row in records), default=1)
+    features = []
+    for row in records:
+        shapes = geography[row["uf"]]
+        # Posição da seta: ponto representativo da cidade mais próxima ao
+        # centro do envelope da UF; permanece efetivamente dentro de uma área.
+        bounds = [shape.bounds for shape in shapes]
+        west = min(b[0] for b in bounds)
+        south = min(b[1] for b in bounds)
+        east = max(b[2] for b in bounds)
+        north = max(b[3] for b in bounds)
+        center = ((west + east) / 2, (south + north) / 2)
+        points = [shape.representative_point() for shape in shapes]
+        point = min(points, key=lambda p: (p.x - center[0])**2 + (p.y - center[1])**2)
+        delta = int(row["delta"])
+        features.append({
+            "type": "Feature",
+            "geometry": _arrow_geometry(
+                point, delta, maximum, (west, south, east, north),
+                size_cap=1.2, size_floor=.22, fraction=.16,
+            ),
+            "properties": {
+                "cor": PT_RED if delta > 0 else PL_BLUE,
+                "regiao": f'UF {escape(row["uf"])} · '
+                          f'{int(row["municipios_comparaveis"])} municípios comparáveis',
+                "delta": _display_int(delta, sign=True),
+                "virada": escape(row["virada"]),
+            },
+        })
+    return {"type": "FeatureCollection", "features": features}
+
+
+def _arrows_group(
+    collection: dict, parent: folium.FeatureGroup, *, label: str,
+    bounds: list[list[float]],
+) -> folium.FeatureGroup | None:
+    if not collection["features"]:
+        return None
+    # 'show=False' materializa as variáveis JS mas não liga nenhuma escala
+    # errada durante a inicialização; o controlador de zoom as ativa.
+    group = folium.FeatureGroup(name=label, control=False, show=False).add_to(parent)
+    BoundedGeoJson(
+        collection, bounds=bounds, control=False,
+        style_function=lambda f: {
+            "color": f["properties"]["cor"], "weight": 2.45, "opacity": .95,
+        },
+        tooltip=folium.GeoJsonTooltip(
+            fields=["regiao", "delta", "virada"],
+            aliases=["Região", "Δ saldo", "Virada"],
+            sticky=False, style=_tooltip_style(),
+        ),
+    ).add_to(group)
+    return group
+
+
+def delta_map(
+    municipal: gpd.GeoDataFrame, *, states: list[dict] | None = None,
+    zones: gpd.GeoDataFrame | None = None,
+) -> folium.Map:
+    """Três escalas automáticas de setas e dois modos exclusivos de visualização.
+
+    0..6: UF (uma seta grande); 7..10: município; >=11: zona se existir malha
+    para a UF, senão mantém município. A geometria nunca é inventada.
+    """
+    if municipal.empty:
+        raise ValueError("Não há geometria municipal para desenhar.")
+    bounds = leaflet_bounds(municipal)
+    west, south, east, north = (float(x) for x in municipal.total_bounds)
+    m = atlas_map([(south + north)/2, (west + east)/2])
+    outline_mode = folium.FeatureGroup(
         name="Divisões + setas", overlay=True, control=True, show=True,
-    )
-    filled_group = folium.FeatureGroup(
+    ).add_to(m)
+    filled_mode = folium.FeatureGroup(
         name="Áreas por delta (sem setas)", overlay=True, control=True, show=False,
-    )
-    # Uma única camada geográfica base, com contornos; o JS troca seu estilo
-    # ao ligar a segunda opção. Assim não duplicamos milhares de polígonos.
-    polygon_layer = BoundedGeoJson(
-        polygon_collection, bounds=bounds, control=False,
+    ).add_to(m)
+    municipality_layer = BoundedGeoJson(
+        _polygons(municipal, approx_zone=False), bounds=bounds, control=False,
         style_function=lambda f: {
             "fillColor": NEUTRAL, "fillOpacity": 0,
-            "color": BORDER, "weight": 0.8,
+            "color": BORDER, "weight": .75,
         },
-        tooltip=tooltip(),
-    ).add_to(map_view)
-
-    if arrows:
-        BoundedGeoJson(
-            {"type": "FeatureCollection", "features": arrows}, bounds=bounds,
+        tooltip=_polygon_tooltip(),
+    ).add_to(m)
+    zone_layer = None
+    zone_arrows = None
+    if zones is not None and not zones.empty:
+        zone_bounds = leaflet_bounds(zones)
+        zone_layer = BoundedGeoJson(
+            _polygons(zones, approx_zone=True), bounds=zone_bounds,
+            control=False, show=False,
             style_function=lambda f: {
-                "color": f["properties"]["cor"], "weight": 2.3,
-                "opacity": 0.95, "fillOpacity": 0,
+                "fillColor": NEUTRAL, "fillOpacity": 0,
+                "color": BORDER, "weight": .75, "dashArray": "4 2",
             },
-            tooltip=folium.GeoJsonTooltip(
-                fields=["regiao", "delta"], aliases=["Região", "Δ saldo"],
-                sticky=False, style=tooltip_style,
-            ),
-        ).add_to(outline_group)
-
-    outline_group.add_to(map_view)
-    filled_group.add_to(map_view)
-    map_view.add_child(ExclusiveDeltaOverlays(outline_group, filled_group, polygon_layer))
-    folium.LayerControl(position="topright", collapsed=False).add_to(map_view)
-    map_view.fit_bounds(bounds)
-    return map_view
+            tooltip=_polygon_tooltip(),
+        ).add_to(m)
+        zone_arrows = _arrows_group(
+            _arrow_collection(zones, size_cap=.02, size_floor=.0004, fraction=.28),
+            outline_mode, label="Setas zonais", bounds=zone_bounds,
+        )
+    city_arrows = _arrows_group(
+        _arrow_collection(municipal), outline_mode,
+        label="Setas municipais", bounds=bounds,
+    )
+    state_arrows = _arrows_group(
+        _state_arrows(municipal, states or []), outline_mode,
+        label="Setas estaduais", bounds=bounds,
+    )
+    m.add_child(DeltaZoomLayers(
+        outline_mode, filled_mode, municipality_layer, zone_layer,
+        state_arrows, city_arrows, zone_arrows,
+    ))
+    folium.LayerControl(position="topright", collapsed=False).add_to(m)
+    m.fit_bounds(bounds)
+    return m
