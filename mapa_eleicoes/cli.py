@@ -383,8 +383,8 @@ def crosswalk_import(file: Path):
         (pl.col(uf_col).str.strip_chars().str.to_uppercase()
          if uf_col else pl.lit("")).alias("uf_original"),
     ).filter(
-        pl.col("codigo_ibge").str.contains(r"^\\d{7}$")
-        & pl.col("cd_municipio_tse").str.contains(r"^\\d+$")
+        pl.col("codigo_ibge").str.contains(r"^\d{7}$")
+        & pl.col("cd_municipio_tse").str.contains(r"^\d+$")
     ).with_columns(
         pl.col("codigo_ibge").str.slice(0, 2)
         .replace(IBGE_UF_BY_PREFIX, default=None)
