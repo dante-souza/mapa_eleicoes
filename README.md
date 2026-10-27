@@ -3,6 +3,26 @@
 Protótipo independente em Python que agrupa votos de **seções → zonas → municípios**, com dados do TSE, **Polars** para dados eleitorais, GeoPandas para preparar geometrias e Folium para navegação no mapa.
 
 
+## Correção: arquivos locais em C:/Downloads
+
+Os anexos enviados em uma conversa **não aparecem automaticamente** no disco Windows. Primeiro, salve os ZIPs do TSE em `C:/Downloads`. O comando `make run` sem `DIR` procura apenas em `data/`, `data/incoming/` e `data/raw/ANO/`.
+
+No PowerShell, com a branch da PR atualizada e a partir da raiz do repositorio:
+
+```powershell
+make data-scan ANO=2026 DIR="C:/Downloads"
+# Deve listar os arquivos "votacao_secao_2026_XX.zip" e os tres "*munzona_2026.zip".
+make run ANO=2026 DIR="C:/Downloads"
+# Se quiser pular a transformacao auxiliar grande, mantenha os votos por secao:
+make run ANO=2026 DIR="C:/Downloads" AUX=0
+# Apos a preparacao (e ao encerrar a interface), gerar o pacote:
+make data-pack ANO=2026
+```
+
+`make data-scan` verifica os nomes/quantidades da pasta sem extrair/processar. `make run DIR=...` copia atomica e incrementalmente os ZIPs reconhecidos para `data/raw/2026/`, verifica a estrutura ZIP e registra qualquer erro no `data/processed/2026/prepare_manifest.json`. Se houver um ZIP corrompido (o arquivo PR anterior era um exemplo), os arquivos saudaveis continuam sendo importados, mas a preparacao encerra com falha ate que o corrompido seja corrigido.
+
+O comando `make import-dir` legado considera apenas os ZIPs `votacao_secao_*`; use **`make run DIR=...`** para incluir tambem os tres datasets agregados `munzona`. Sem arquivos reconhecidos, nenhum bundle sera gerado; confira se os downloads sao arquivos ZIP reais (e nao atalhos ou links). O `make data-pack` cria `data/bundles/tse_raw_2026_bundle.zip` somente com os originais que ja foram importados.
+
 ## Fluxo automatizado de dados brutos: make run
 
 **Regra:** `make run` agora executa `make prepare-data` ANTES de iniciar o Streamlit. A preparacao e incremental: muda apenas arquivos de origem modificados (tamanho/mtime e hash SHA-256 nos manifestos); preserva os ZIPs TSE, processa os CSVs de votacao por secao para o mapa e materializa os 3 datasets `munzona` em arquivos Parquet separados. Isso pode exigir muitos gigabytes de espaco e levar bastante tempo na primeira execucao.
