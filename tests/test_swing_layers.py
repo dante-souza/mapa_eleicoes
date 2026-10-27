@@ -123,11 +123,21 @@ def test_zoom_switches_to_prepared_zones_without_reloading_tiles():
     assert "L.marker(" not in html
 
 
-def test_navigation_labels_main_page_without_renaming_existing_app():
+def test_original_map_page_runs_as_classic_streamlit_homepage():
+    """Prevent a st.navigation router from changing the main map lifecycle."""
     from pathlib import Path
+
     root = Path(__file__).resolve().parents[1]
-    router = (root / "atlas.py").read_text(encoding="utf-8")
+    homepage = (root / "Atlas_Eleitoral.py").read_text(encoding="utf-8")
     makefile = (root / "Makefile").read_text(encoding="utf-8")
-    assert 'st.Page("app.py", title="Atlas Eleitoral"' in router
-    assert 'st.Page("pages/1_Deltas_e_viradas.py", title="Deltas e viradas"' in router
-    assert makefile.count("-m streamlit run atlas.py") == 2
+    app = (root / "app.py").read_text(encoding="utf-8")
+
+    assert "st.navigation(" not in homepage
+    assert "st.Page(" not in homepage
+    assert 'with_name("app.py")' in homepage
+    assert 'exec(compile(' in homepage
+    assert not (root / "atlas.py").exists()
+    assert makefile.count("-m streamlit run Atlas_Eleitoral.py") == 2
+    assert 'CityFocus(results_layer)' in app
+    assert "render_explorer(" in app
+    assert (root / "pages" / "1_Deltas_e_viradas.py").is_file()
