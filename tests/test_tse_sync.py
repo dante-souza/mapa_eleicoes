@@ -78,3 +78,17 @@ def test_missing_source_download_failure_is_not_silently_ignored(tmp_path, monke
     import pytest
     with pytest.raises(RuntimeError, match="nao esta disponivel"):
         tse_sync.sync(2026, ufs=["PR"])
+
+
+
+def test_full_verification_checks_existing_state_once_daily(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "DATA", tmp_path)
+    source = make_zip(tmp_path, 2026, "SP", "source-v1")
+    requests = []
+    def fake_download(year, uf, refresh=False):
+        requests.append((year, uf, refresh))
+        return source
+    monkeypatch.setattr(cli, "download_tse", fake_download)
+    tse_sync.sync(2026, ufs=["SP"], check_daily=True)
+    tse_sync.sync(2026, ufs=["SP"], check_daily=True)
+    assert requests == [(2026, "SP", True)]
