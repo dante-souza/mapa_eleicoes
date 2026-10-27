@@ -21,7 +21,8 @@ UF_CODES = (
 
 
 def sync(year: int, ufs: list[str] | None = None,
-         force: bool = False, root: Path | None = None) -> dict:
+         force: bool = False, root: Path | None = None,
+         check_daily: bool = False) -> dict:
     """Reconcilia fontes prioritarias, guardando ultima verificacao diaria."""
     data = root or cli.DATA
     source_root = data / "raw" / str(year)
@@ -58,7 +59,8 @@ def sync(year: int, ufs: list[str] | None = None,
         stale_br = uf == "BR" and 2 not in turns
         should_refresh = (
             force or not valid
-            or (stale_br and entries.get(uf, {}).get("checked_utc_day") != now_day)
+            or ((stale_br or check_daily)
+                and entries.get(uf, {}).get("checked_utc_day") != now_day)
         )
         if not should_refresh:
             print(f"[TSE CACHE] {uf}: fonte ja disponivel")
@@ -101,7 +103,8 @@ def main(argv: list[str] | None = None) -> None:
     targets = list(UF_CODES) if args.all else [
         value.strip().upper() for value in args.ufs.split(",") if value.strip()
     ]
-    summary = sync(args.year, ufs=targets, force=args.force)
+    summary = sync(args.year, ufs=targets, force=args.force,
+                   check_daily=args.all)
     print(f"[TSE SYNC] {summary}")
 
 
