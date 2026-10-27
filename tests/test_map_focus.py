@@ -75,3 +75,18 @@ def test_focus_does_not_auto_zoom_without_saved_city():
     assert 'featureLayer.on("click"' in html
     # Não depende de e.layer (pode estar ausente num clique propagado).
     assert "idOf(e.layer)" not in html
+
+
+def test_streamlit_folium_keeps_focus_code_in_component_javascript():
+    """Full Folium HTML passing is not enough: test the Streamlit bridge too."""
+    from streamlit_folium import generate_leaflet_string
+
+    fmap = folium.Map(location=[0, 0])
+    layer = folium.GeoJson(FC).add_to(fmap)
+    fmap.add_child(CityFocus(layer, initial_focus="3550308"))
+    fmap.get_root().render()
+    component_js = generate_leaflet_string(fmap)
+    assert 'featureLayer.on("click"' in component_js
+    assert 'map.on("click", function (e)' in component_js
+    assert "map.fitBounds(featureLayer.getBounds()" in component_js
+    assert "setFocus(INITIAL_CITY)" in component_js
