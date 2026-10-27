@@ -40,7 +40,8 @@ def test_back_control_esc_and_dark_backdrop():
     fmap.add_child(CityFocus(layer))
     html = fmap.get_root().render()
     assert "Voltar ao mapa completo" in html and '"Escape"' in html
-    assert ".atlas-focus .leaflet-tile-pane { filter: brightness(.25)" in html
+    # O estilo atual aprovado usa .12; .25 era expectativa antiga do teste.
+    assert ".atlas-focus .leaflet-tile-pane { filter: brightness(.12)" in html
     single = folium.Map(location=[0, 0])
     single.add_child(FocusBackdrop())
     assert '"atlas-focus")' in single.get_root().render()
