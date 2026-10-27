@@ -121,3 +121,46 @@ ANO=2026`. Uma execução que já ativou `st.navigation` não volta para
 a navegação automática somente por hot reload; requer novo processo.
 O teste estrutural verifica a preservação de `CityFocus` e
 `render_explorer`, mas a confirmação de clique/zoom exige navegador.
+
+
+### Hotfix: clique/zoom da página principal (segunda intervenção)
+
+A restauração anterior do entrypoint não foi suficiente: o usuário relatou
+que clicar nos municípios continuava sem produzir o enquadramento esperado.
+Foi feita uma correção na **interação Leaflet**, isolada dos deltas:
+
+- `CityFocus` agora registra `click` diretamente em cada feição GeoJSON,
+  em vez de depender de `e.layer` num evento propagado do grupo.
+- Há fallback no clique do mapa: resolve a geometria municipal pelo ponto
+  clicado quando Canvas/pane não entrega o evento da feição. Não processa
+  duas vezes o mesmo clique propagado de um polígono.
+- `map.fitBounds` é acionado **antes** do repaint de todos os municípios,
+  mantendo a resposta da câmera ágil no mapa nacional.
+- No detalhamento puramente **Município**, `st_folium` não envia clique
+  de volta ao servidor, evitando reinicializações desnecessárias.
+- Quando o clique é usado para carregar zonas/locais em modo **Automático**,
+  o município focado é guardado com o escopo dos filtros e usado para
+  restaurar a câmera após rerun.
+- Novos testes verificam o clique nas feições, o fallback no mapa, a
+  restauração do foco e a **serialização pela ponte streamlit-folium**,
+  não apenas o HTML gerado pelo Folium.
+
+A aplicação **não muda** as paletas, o modelo de votos nem as geometrias.
+O patch está na PR #11, ainda em revisão. Os testes e o clique real
+precisam ser confirmados na máquina do operador.
+
+No PowerShell, após `Ctrl+C` para encerrar o Streamlit:
+
+```powershell
+git fetch origin
+git merge --ff-only origin/feature/deltas-viradas-municipio-zona-20261027
+make test
+make preview ANO=2026
+```
+
+Validar na página Atlas Eleitoral primeiro com **Detalhamento geográfico =
+Automático**: clicar num município deve alterar imediatamente a câmera,
+destacar a região e escurecer o entorno; arrastar/usar o scroll deve
+continuar operando; Esc ou Voltar retorna ao mapa original. Repetir com
+**Município** e selecionar novamente Automático para testar o rerun
+com carregamento de locais. A página de deltas não altera esses controles.
