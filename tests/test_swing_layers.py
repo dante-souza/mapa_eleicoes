@@ -63,7 +63,7 @@ def test_two_overlays_are_exclusive_and_tiles_remain_visible():
     assert 'scale === "state"' in html
     assert 'scale === "city"' in html
     # Duas malhas: estado dissolvido e municípios; setas só em Canvas.
-    assert html.count("L.geoJson(") == 2
+    assert html.count("L.geoJson(") == 3
     assert "L.marker(" not in html
     props = polygon_properties(mapa)
     assert len(props) == 2
@@ -88,7 +88,7 @@ def test_missing_vote_does_not_make_arrow():
     geo["_vote"] = [None, None]
     mapa = delta_map(geo)
     html = mapa.get_root().render()
-    assert html.count("L.geoJson(") == 2
+    assert html.count("L.geoJson(") == 3
     props = polygon_properties(mapa)
     assert len(props) == 2
     assert all(prop["regiao"] == "Sem dados comparáveis" for prop in props)
@@ -133,7 +133,7 @@ def test_zoom_switches_to_prepared_zones_without_reloading_tiles():
     assert '"zone":' in html
     assert 'atlas-swing-arrows' in html
     assert "zonas" not in str(mapa.location)  # inicialização geográfica normal
-    assert html.count("L.geoJson(") == 3
+    assert html.count("L.geoJson(") == 4  # borda UF + 3 camadas de hover
     assert "L.marker(" not in html
 
 
@@ -156,9 +156,47 @@ def test_arrows_are_screen_sized_and_preserve_colors():
     assert 'scale === "state" ? 40' in html
     assert 'scale === "zone" ? 16' in html
     assert '"#d60828"' in html and '"#272d97"' in html
-    assert '"#f8f8f2"' in html  # halo de contraste
+    assert 'ctx.strokeStyle = "#f8f8f2"' not in html
+    assert html.count("ctx.strokeStyle =") == 1  # nenhuma borda/halo na seta
     assert "window.devicePixelRatio" in html
     assert "new Map()" in html  # redução visual de sobreposições
+
+
+def test_only_state_boundaries_drawn_at_every_zoom():
+    from mapa_eleicoes.swing_layers import DeltaZoomLayers
+    import inspect
+
+    source = inspect.getsource(DeltaZoomLayers)
+    assert "stroke: false, weight: 0" in source  # município/zona ocultos
+    assert "fillOpacity: 0.001" in source  # captura do hover preservada
+    assert "syncPolygon(states, scale === \"state\"" in source
+    assert "syncPolygon(cities, scale !== \"state\"" in source
+    # A borda estadual fica numa camada própria, sempre ligada;
+    # os dois modos de delta usam a mesma geometria de hover.
+    fmap = delta_map(sample())
+    layers = [child for child in fmap._children.values()
+              if isinstance(child, folium.GeoJson)]
+    assert len(layers) == 3
+    border = layers[-1]
+    assert border.options.get("interactive") is False
+    assert border._style is not None
+    assert 'interactive": false' in fmap.get_root().render()
+    assert "map.on(\"zoomend moveend resize\", sync)" in fmap.get_root().render()
+
+
+def test_state_border_ignores_internal_holes_from_simplified_municipalities():
+    from mapa_eleicoes.swing_layers import _state_border_geography
+    donut = Polygon(
+        [(0, 0), (4, 0), (4, 4), (0, 4)],
+        holes=[[(1, 1), (3, 1), (3, 3), (1, 3)]],
+    )
+    regions = gpd.GeoDataFrame(
+        {"_key": ["SP"], "_vote": [None]},
+        geometry=[donut], crs="EPSG:4326",
+    )
+    outline = _state_border_geography(regions)
+    assert len(outline) == 1
+    assert len(outline.geometry.iloc[0].interiors) == 0
 
 
 def test_original_map_page_runs_as_classic_streamlit_homepage():
