@@ -174,8 +174,13 @@ def render_site_points(
     sections: pl.DataFrame, sites: pl.DataFrame, *,
     selected_number: str | None = None,
     max_sites: int = 1800,
+    pane: str | None = None,
 ) -> tuple[folium.Map, int, int]:
-    """Mapa de enderecos oficiais com seção no popup, sem geometria falsa."""
+    """Mapa de enderecos oficiais com seção no popup, sem geometria falsa.
+
+    `pane`: pane Leaflet ja existente no mapa de destino (ver map_panes);
+    pontos e agrupamentos vao para ele e somem/aparecem pelo zoom.
+    """
     if sites.is_empty():
         raise ValueError("Nao ha locais georreferenciados para a selecao")
     sites = sites.sort(["n_secoes", "local"], descending=[True, False])
@@ -185,7 +190,10 @@ def render_site_points(
     lat = float(sites["latitude"].mean())
     lon = float(sites["longitude"].mean())
     mapa = atlas_map([lat, lon])
-    cluster = MarkerCluster(name="Locais de votação").add_to(mapa)
+    cluster = MarkerCluster(
+        name="Locais de votação",
+        **({"clusterPane": pane} if pane else {}),
+    ).add_to(mapa)
     # Tabela de seções por local: indexada em Python, sem Pandas.
     key_columns = ["uf", "cd_municipio_tse", "turno", "zona", "local"]
     by_site = {}
@@ -243,7 +251,7 @@ def render_site_points(
             + "<p style='font-size:11px'>Ponto do local de votação, "
             "não é perímetro geográfico da seção.</p>"
         )
-        folium.CircleMarker(
+        marker = folium.CircleMarker(
             location=[float(site["latitude"]), float(site["longitude"])],
             radius=7, fill=True, color="#f8f8f2", weight=0.5,
             fill_color=color, fill_opacity=0.92,
@@ -253,7 +261,11 @@ def render_site_points(
                 + (f"{float(pct):.1f}%" if selected_number is not None else
                    f"{escape(str(site['lider']))} {float(pct):.1f}%")
             ),
-        ).add_to(cluster)
+        )
+        if pane:
+            # path_options do folium descarta `pane`; a opcao vai direto.
+            marker.options["pane"] = pane
+        marker.add_to(cluster)
     mapa.get_root().html.add_child(folium.Element(legend_html(
         "percentual" if selected_number is not None else "margem"
     )))
@@ -277,6 +289,7 @@ def site_feature_group(
     sections: pl.DataFrame, sites: pl.DataFrame, *,
     selected_number: str | None = None,
     max_sites: int = 1800,
+    pane: str | None = None,
 ) -> tuple[folium.FeatureGroup, int, int]:
     """Camada dinamica para st_folium sem reconstruir o mapa nacional.
 
@@ -284,7 +297,8 @@ def site_feature_group(
     quando os marcadores mudam ao aproximar/arrastar o mapa.
     """
     site_map, total, hidden = render_site_points(
-        sections, sites, selected_number=selected_number, max_sites=max_sites
+        sections, sites, selected_number=selected_number, max_sites=max_sites,
+        pane=pane,
     )
     layer = folium.FeatureGroup(name="Locais TSE por secao")
     clusters = [

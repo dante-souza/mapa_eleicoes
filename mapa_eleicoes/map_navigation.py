@@ -10,18 +10,18 @@ from __future__ import annotations
 import math
 
 import geopandas as gpd
-from shapely.geometry import Point, box
+from shapely.geometry import Point
 
 from mapa_eleicoes.cli import IBGE_UF_BY_PREFIX
 
 # Escalas do drill-down automatico (como no mapa de apuracao):
 # municipios sempre; areas aproximadas de zona a partir de ZONE_ZOOM;
-# pontos dos locais de votacao a partir de SITE_ZOOM. O clique num
-# municipio aproxima ate FOCUS_ZOOM, que ja revela as zonas da cidade.
+# pontos dos locais de votacao a partir de SITE_ZOOM. A troca e feita no
+# navegador (mapa_eleicoes.map_panes); o clique num municipio enquadra a
+# cidade inteira (no minimo ZONE_ZOOM se ela tem varias zonas).
 ZONE_ZOOM = 10
 FOCUS_ZOOM = 11
 SITE_ZOOM = 12
-MAX_CITIES_IN_VIEW = 80
 
 
 def valid_position(position: dict | None) -> tuple[float, float] | None:
@@ -92,54 +92,23 @@ def focus_for_view(
     return None
 
 
-def should_render_zones(zoom: object, available: bool) -> bool:
-    try:
-        z = float(zoom)
-    except (TypeError, ValueError):
-        return False
-    return bool(available and math.isfinite(z) and z >= ZONE_ZOOM)
+def zoom_for_bounds(
+    bounds: tuple[float, float, float, float],
+    *, width: int = 900, height: int = 700,
+    min_zoom: int = 4, max_zoom: int = 15,
+) -> int:
+    """Maior zoom inteiro (Web Mercator) em que (oeste, sul, leste, norte) cabe."""
+    west, south, east, north = (float(v) for v in bounds)
+    values = (west, south, east, north)
+    if not all(math.isfinite(v) for v in values) or west > east or south > north:
+        return min_zoom
 
+    def mercator_y(lat: float) -> float:
+        lat = max(min(lat, 85.0), -85.0)
+        return math.log(math.tan(math.pi / 4 + math.radians(lat) / 2))
 
-def valid_bounds(bounds: dict | None) -> tuple[float, float, float, float] | None:
-    """Bounds do Leaflet ({_southWest, _northEast}) -> (oeste, sul, leste, norte)."""
-    if not isinstance(bounds, dict):
-        return None
-    south_west = valid_position(bounds.get("_southWest"))
-    north_east = valid_position(bounds.get("_northEast"))
-    if south_west is None or north_east is None:
-        return None
-    (south, west), (north, east) = south_west, north_east
-    if south > north or west > east:
-        return None
-    return west, south, east, north
-
-
-def municipalities_in_view(
-    geometries: gpd.GeoDataFrame,
-    bounds: dict | None,
-    center: dict | None = None,
-    *,
-    limit: int = MAX_CITIES_IN_VIEW,
-) -> list[str]:
-    """Municipios (IBGE) que tocam a area visivel; centro primeiro.
-
-    Sem bounds validos, cai para o municipio sob o centro. Limite evita
-    carregar dezenas de cidades numa vista ampla.
-    """
-    if "map_id" not in geometries.columns:
-        return []
-    first = municipality_at(geometries, center)
-    box_bounds = valid_bounds(bounds)
-    if box_bounds is None:
-        return [first] if first else []
-    window = box(*box_bounds)
-    try:
-        indices = geometries.sindex.query(window, predicate="intersects")
-        codes = [str(geometries.iloc[int(i)]["map_id"]) for i in indices]
-    except (AttributeError, TypeError):
-        codes = [
-            str(code) for code, shape in zip(geometries["map_id"], geometries.geometry)
-            if shape is not None and shape.intersects(window)
-        ]
-    ordered = ([first] if first else []) + sorted(set(codes) - {first})
-    return ordered[:limit]
+    lon_fraction = max((east - west) / 360.0, 1e-9)
+    lat_fraction = max((mercator_y(north) - mercator_y(south)) / (2 * math.pi), 1e-9)
+    zoom = min(math.log2(width / 256 / lon_fraction),
+               math.log2(height / 256 / lat_fraction))
+    return int(max(min_zoom, min(max_zoom, math.floor(zoom))))

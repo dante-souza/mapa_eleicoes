@@ -6,9 +6,8 @@ import pytest
 from shapely.geometry import Polygon
 
 from mapa_eleicoes.map_navigation import (
-    SITE_ZOOM, FOCUS_ZOOM, ZONE_ZOOM, municipality_at, municipalities_in_view,
-    should_render_sites, should_render_zones, state_for_municipality,
-    valid_bounds, valid_position,
+    SITE_ZOOM, FOCUS_ZOOM, ZONE_ZOOM, municipality_at, should_render_sites,
+    state_for_municipality, valid_position, zoom_for_bounds,
 )
 
 
@@ -40,27 +39,18 @@ def test_edge_uses_polygon_covers_without_inventing_nearest_city():
 
 
 def test_drilldown_order_municipio_zona_local():
-    # Clique numa cidade ja mostra as zonas; locais pedem mais zoom.
+    # Municipio -> zonas -> locais, cada nivel com mais zoom.
     assert ZONE_ZOOM <= FOCUS_ZOOM < SITE_ZOOM
-    assert not should_render_zones(ZONE_ZOOM - 1, True)
-    assert should_render_zones(ZONE_ZOOM, True)
-    assert not should_render_zones(ZONE_ZOOM, False)
-    assert not should_render_zones(None, True)
 
 
-def test_cities_in_view_center_first_and_bounds_validated():
-    shapes = geometry()
-    view = {"_southWest": {"lat": -24.5, "lng": -47.5},
-            "_northEast": {"lat": -21.5, "lng": -42.5}}
-    center = {"lat": -22.5, "lng": -43.5}
-    assert municipalities_in_view(shapes, view, center) == ["3304557", "3550308"]
-    only_sp = {"_southWest": {"lat": -24, "lng": -47},
-               "_northEast": {"lat": -23.2, "lng": -46.2}}
-    assert municipalities_in_view(shapes, only_sp, None) == ["3550308"]
-    assert municipalities_in_view(shapes, None, center) == ["3304557"]
-    assert municipalities_in_view(shapes, view, center, limit=1) == ["3304557"]
-    assert valid_bounds({"_southWest": {"lat": 1, "lng": 0},
-                         "_northEast": {"lat": 0, "lng": 1}}) is None
+def test_zoom_for_bounds_frames_city_and_country():
+    # Sao Paulo (capital): ~0,5 x 0,65 grau cabe em zoom 10 num mapa de 700 px.
+    assert zoom_for_bounds((-46.83, -24.01, -46.36, -23.36), height=700) == 10
+    # Brasil inteiro: zoom de pais, limitado pelo minimo.
+    assert zoom_for_bounds((-74, -34, -34, 5.3), height=700) == 4
+    # Cidade minuscula nao passa do zoom maximo.
+    assert zoom_for_bounds((-46.6, -23.5, -46.5999, -23.4999)) == 15
+    assert zoom_for_bounds((1, 0, 0, 1)) == 4
 
 
 def test_section_pins_appear_only_after_urban_zoom():

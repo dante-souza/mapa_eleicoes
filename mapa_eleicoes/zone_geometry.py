@@ -10,7 +10,12 @@ aproximada a partir de duas fontes oficiais, sem nomes nem centroides:
 
 Cada setor recebe a zona que tem MAIS SECOES em locais de votacao dentro
 dele. Setor sem local de votacao recebe a zona do local mais proximo do
-MESMO municipio. Setores sao entao unidos por (uf, municipio TSE, zona).
+MESMO municipio. Setores sao entao unidos de duas formas:
+
+- por (uf, municipio TSE, zona): zonas DENTRO da cidade (zonas_municipio_UF);
+- por (uf, zona): a zona inteira, que no interior costuma abranger varios
+  municipios (zonas_uf_UF), base do mapa "por zona eleitoral".
+
 Municipio sem local georreferenciado nao recebe area de zona (ausencia).
 
 O resultado e sempre rotulado como aproximado e registra metodo, fontes,
@@ -37,7 +42,7 @@ from mapa_eleicoes.geo_bridge import ibge_code
 from mapa_eleicoes.geography import download, verify_zip
 
 DATA = cli.DATA
-REVISION = 1
+REVISION = 2
 METHOD = "setores_ibge_2022_zona_dominante_por_secoes"
 METRIC_CRS = "EPSG:5880"  # SIRGAS 2000 / Brazil Polyconic (metros)
 SETORES_BASE = (
@@ -269,8 +274,71 @@ def dissolve_zones(
     ]].to_crs(4326)
 
 
+def dissolve_districts(
+    tracts: gpd.GeoDataFrame, assignments: pl.DataFrame,
+    *, simplify_meters: float = 30.0,
+) -> gpd.GeoDataFrame:
+    """Une setores por (uf, zona): a zona inteira, atravessando municipios.
+
+    Simplificacao como cobertura sobre a UF inteira: divisas entre zonas
+    vizinhas (inclusive de municipios diferentes) continuam coincidentes.
+    """
+    columns = ["map_id", "uf", "zona", "n_municipios", "municipios_tse",
+               "n_setores", "setores_por_proximidade", "metodo", "aproximada",
+               "geometry"]
+    if assignments.is_empty():
+        return gpd.GeoDataFrame(columns=columns, geometry="geometry", crs="EPSG:4326")
+    by_tract = {row["cd_setor"]: row for row in assignments.iter_rows(named=True)}
+    base = tracts.loc[[setor in by_tract for setor in tracts["cd_setor"]]].copy()
+    rows = [by_tract[setor] for setor in base["cd_setor"]]
+    base["uf"] = [row["uf"] for row in rows]
+    base["zona"] = [int(row["zona"]) for row in rows]
+    base["por_proximidade"] = [int(row["criterio"] == "proximidade") for row in rows]
+    base["n_setores"] = 1
+    cities: dict[tuple[str, int], set[str]] = {}
+    for row in rows:
+        cities.setdefault((row["uf"], int(row["zona"])), set()).add(
+            str(row["cd_municipio_tse"])
+        )
+    zones = base[["uf", "zona", "n_setores", "por_proximidade", "geometry"]].dissolve(
+        by=["uf", "zona"], aggfunc={"n_setores": "sum", "por_proximidade": "sum"},
+        as_index=False,
+    )
+    zones["geometry"] = shapely.make_valid(zones.geometry.values)
+    if simplify_meters and len(zones):
+        zones["geometry"] = shapely.make_valid(
+            shapely.coverage_simplify(list(zones.geometry.values), simplify_meters)
+        )
+    members = [sorted(cities[(uf, int(zona))], key=lambda code: (len(code), code))
+               for uf, zona in zip(zones["uf"], zones["zona"])]
+    zones["n_municipios"] = [len(codes) for codes in members]
+    zones["municipios_tse"] = [",".join(codes) for codes in members]
+    zones["map_id"] = [f"{uf}:{int(zona)}" for uf, zona in zip(zones["uf"], zones["zona"])]
+    zones["metodo"] = METHOD
+    zones["aproximada"] = True
+    zones = zones.rename(columns={"por_proximidade": "setores_por_proximidade"})
+    return zones[columns].to_crs(4326)
+
+
 def zone_file(root: Path, uf: str) -> Path:
+    """Zonas dentro de cada municipio (uf, municipio TSE, zona)."""
     return root / "geo" / "zonas" / f"zonas_municipio_{uf}.geojson"
+
+
+def district_file(root: Path, uf: str) -> Path:
+    """Zona inteira (uf, zona), podendo abranger varios municipios."""
+    return root / "geo" / "zonas" / f"zonas_uf_{uf}.geojson"
+
+
+def _write_geojson(frame: gpd.GeoDataFrame, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + ".part")
+    temporary.unlink(missing_ok=True)
+    try:
+        frame.to_file(temporary, driver="GeoJSON", index=False)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def build_uf(
@@ -281,17 +349,14 @@ def build_uf(
     places = place_weights(locations.filter(pl.col("uf") == uf), crosswalk)
     assignments, report = assign_tracts(tracts, places)
     zones = dissolve_zones(tracts, assignments, simplify_meters=simplify_meters)
+    districts = dissolve_districts(tracts, assignments, simplify_meters=simplify_meters)
     target = zone_file(root, uf)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(target.name + ".part")
-    temporary.unlink(missing_ok=True)
-    try:
-        zones.to_file(temporary, driver="GeoJSON", index=False)
-        os.replace(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
+    _write_geojson(zones, target)
+    _write_geojson(districts, district_file(root, uf))
     report.update({
         "uf": uf, "setores": len(tracts), "areas_de_zona": len(zones),
+        "zonas_completas": len(districts),
+        "arquivo_zonas_completas": district_file(root, uf).name,
         "municipios_com_mais_de_uma_zona": len(
             {code for code, n in zip(zones["codigo_ibge"], zones["n_zonas_municipio"]) if n > 1}
         ),
@@ -354,7 +419,8 @@ def setup(
         "metodo": METHOD,
         "aproximada": True,
         "descricao": (
-            "Area aproximada da zona eleitoral dentro do municipio: setores "
+            "Area aproximada da zona eleitoral (dentro do municipio e zona "
+            "inteira por UF): setores "
             "censitarios IBGE 2022 atribuidos a zona com mais secoes em locais "
             "de votacao TSE no setor; setores sem local recebem a zona do local "
             "mais proximo do mesmo municipio. Nao e limite oficial."

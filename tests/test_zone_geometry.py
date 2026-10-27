@@ -139,3 +139,38 @@ def test_setup_writes_per_uf_geojson_and_manifest(tmp_path):
     assert (root / "geo" / "zonas" / "manifest.json").is_file()
     with pytest.raises(ValueError):
         zg.setup(2026, ["XX"], setores=write_tracts(source), root=root)
+
+
+def test_district_is_whole_zone_across_municipalities(tmp_path):
+    tracts = zg.read_tracts(write_tracts(tmp_path), uf="SP")
+    assignments, _ = zg.assign_tracts(tracts, zg.place_weights(locations(), crosswalk()))
+    # Zona 2 tambem cobre um municipio vizinho (Campinas) com um setor.
+    extra = pl.DataFrame({
+        "cd_setor": ["350950200000001"], "codigo_ibge": [OTHER], "uf": ["SP"],
+        "cd_municipio_tse": ["62910"], "zona": [2], "criterio": ["locais"],
+    }).with_columns(pl.col("zona").cast(assignments.schema["zona"]))
+    districts = zg.dissolve_districts(
+        tracts, pl.concat([assignments, extra], how="vertical_relaxed"),
+        simplify_meters=10,
+    )
+    by_id = {row["map_id"]: row for _, row in districts.iterrows()}
+    assert set(by_id) == {"SP:1", "SP:2"}
+    assert by_id["SP:2"]["n_municipios"] == 2
+    assert by_id["SP:2"]["municipios_tse"] == "62910,71072"
+    assert by_id["SP:1"]["municipios_tse"] == "71072"
+    assert all(districts["aproximada"]) and districts.crs.to_epsg() == 4326
+
+
+def test_setup_also_writes_whole_zone_file(tmp_path):
+    root = tmp_path / "data"
+    (root / "serving" / "2026").mkdir(parents=True)
+    (root / "reference").mkdir(parents=True)
+    locations().write_parquet(root / "serving" / "2026" / "locais.parquet")
+    crosswalk().write_csv(root / "reference" / "tse_ibge.csv")
+    source = tmp_path / "src"
+    source.mkdir()
+    manifest = zg.setup(2026, ["SP"], setores=write_tracts(source), root=root)
+    data = json.loads(zg.district_file(root, "SP").read_text(encoding="utf-8"))
+    assert {f["properties"]["map_id"] for f in data["features"]} == {"SP:1", "SP:2"}
+    assert manifest["revisao"] == zg.REVISION
+    assert manifest["ufs"]["SP"]["zonas_completas"] == 2
