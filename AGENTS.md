@@ -18,3 +18,6 @@
 14. **Malha oficial:** `make geo-setup` e `make geo-check` sao os alvos para configurar IBGE 2025 e correspondencia TSE/IBGE, preservando originais, hashes e datas. Nunca usar join por nome; municipio nao e zona eleitoral.
 15. **Preview com cobertura incompleta:** `make preview` apenas abre dados ja processados, sem afirmar cobertura completa e sem esconder falhas do `make run`. Nao altere a exigencia de integridade do preparo dos brutos.
 16. **GeoPandas e Polars isolados:** geometrias no GeoPandas, tabela de correspondencia e calculos no Polars, geocodigos como texto; teste a serializacao GeoJSON e zeros a esquerda.
+
+17. **Base cartográfica pública:** não usar tiles CARTO sem chave de API; preferir OpenStreetMap com atribuição visível. Filtro de cor só nos tiles, nunca nos polígonos eleitorais; testar HTML gerado pelo Folium.
+18. **Streamlit:** substituir `use_container_width` de elementos nativos por `width="stretch"`. Não confundir esse parâmetro com a API própria do `st_folium`.
