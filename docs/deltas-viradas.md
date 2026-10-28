@@ -243,3 +243,57 @@ Após `make test` e `make preview ANO=2026`, conferir que:
    máximo, sem desenhar linhas internas.
 3. Não há traços brancos nas setas; o modo preenchido não contém setas.
 4. O zoom e clique do Atlas principal permanecem funcionando como antes.
+
+## Hotfix Atlas principal: preservar zoom ao navegar entre páginas
+
+Após a aprovação visual de **Deltas e viradas**, foi relatada uma nova
+regressão de clique/zoom da página principal. A página de deltas e seu
+renderer NÃO foram alterados.
+
+O Atlas agora tem dois caminhos complementares para focar a cidade:
+
+- **Leaflet:** `CityFocus` executa `fitBounds` imediatamente no clique.
+- **Servidor:** `municipal_focus_bounds(geometry, codigo_ibge)` utiliza
+  exatamente o polígono municipal já exibido para definir os limites
+  iniciais do mapa no rerun. Isso impede que uma remontagem do componente
+  devolva a câmera ao mapa nacional.
+- O componente informa somente `last_clicked`, `last_object_clicked` e
+  `last_object_clicked_count`; zoom, centro e arrasto nunca provocam
+  reruns. A seleção escolhe o evento **que mudou**, evitando reutilizar
+  coordenadas antigas guardadas pelo `streamlit-folium`.
+- Caso o callback ocorra após a construção do mapa, um único `st.rerun()`
+  adicional aplica o novo foco. A checagem de mudança impede loops.
+- `CityFocus` recebe `home_bounds` separadamente para que o botão
+  **Voltar ao mapa completo** e Esc não usem erroneamente o limite da
+  cidade como enquadramento original.
+- Testes novos cobrem cálculo de bounds por código IBGE, clique de
+  Canvas, eventos antigos e repetidos, ausência de zoom entre os dados
+  retornados e manutenção dos bounds originais.
+
+### Procedimento obrigatório de validação local
+
+Com o processo Streamlit anterior encerrado (`Ctrl+C`):
+
+```powershell
+git fetch origin
+git merge --ff-only origin/feature/deltas-viradas-municipio-zona-20261027
+make test
+make preview ANO=2026
+```
+
+No navegador, conferir o comportamento do Atlas principal na ordem:
+
+1. Em **Automático**, clicar no município e observar enquadramento
+   imediato, foco, tooltip e carregamento de detalhes.
+2. Usar Esc ou **Voltar ao mapa completo**; o limite inicial da UF/Brasil
+   precisa ser restaurado.
+3. Repetir o clique no mesmo município e, depois, em outro município.
+4. Aproximar/arrastar sem clique: o Streamlit não deve desmontar o mapa.
+5. Navegar para **Deltas e viradas**, voltar ao **Atlas Eleitoral** e
+   repetir o clique. Validar as duas páginas separadamente.
+
+O teste de unidade é necessário, mas **não substitui** a verificação do
+browser com os Parquets locais. Não fazer merge até o operador confirmar
+o resultado. A causa exata do problema intermitente não foi reproduzida
+no navegador durante esta revisão; as alterações protegem contra as
+rotas de rerun e de evento obsoleto identificadas no código.
