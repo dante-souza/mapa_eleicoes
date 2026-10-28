@@ -131,13 +131,11 @@ def render_explorer(
 
     # "Município": so a malha municipal, sem camadas de detalhe.
     drill = detail != "Município"
-    district_mode = detail == ZONE_DETAIL and uf != "Todas"
-    if detail == ZONE_DETAIL and uf == "Todas":
-        st.info("Escolha uma UF para ver o mapa por zona eleitoral; "
-                "enquanto isso, clique numa cidade para ver as zonas dela.")
-    # Sem UF, o detalhamento por zona cai no comportamento automatico.
-    gate_detail = "Automático" if detail == ZONE_DETAIL and not district_mode else detail
-    base_map.add_child(ZoomPanes(explorer_gates(gate_detail)))
+    # O Atlas opera apenas em Automático: não existe mais modo de
+    # zona em tela separada. Os panes são controlados pelo zoom.
+    district_mode = False
+    # Sempre iniciar o mapa com os panes do fluxo automatico.
+    base_map.add_child(ZoomPanes(explorer_gates("Automático")))
     if section_ready:
         base_map.add_child(ClusterAssets())
 
@@ -176,10 +174,13 @@ def render_explorer(
                     names=names, selected_number=selected,
                     highlight_zone=highlight, pane=ZONE_PANE, labels=labels,
                 )
-                if group is not None and uf != "Todas":
+                if group is not None:
+                    # Na navegacao nacional, após clicar em uma cidade,
+                    # o Streamlit reconstroi o mapa com esta camada NO
+                    # GeoJSON inicial. Não depender de feature_group_to_add
+                    # para zonas (a ponte pode montar a pane tarde demais).
+                    # A visibilidade permanece controlada no navegador.
                     base_map.add_child(group)
-                elif group is not None:
-                    dynamic.append(group)
     except (ValueError, KeyError, OSError, pl.exceptions.PolarsError):
         zone_count = 0
         st.caption("As zonas desta área estão indisponíveis; os municípios continuam no mapa.")
