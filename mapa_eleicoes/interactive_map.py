@@ -28,7 +28,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from mapa_eleicoes.map_navigation import (
-    municipality_at, state_for_municipality,
+    municipality_at, state_for_municipality, valid_position,
 )
 from mapa_eleicoes.map_panes import (
     DISTRICT_PANE, SITE_PANE, ZONE_PANE, ClusterAssets, ZoomPanes, explorer_gates,
@@ -119,6 +119,7 @@ def render_explorer(
         st.session_state["atlas_explorer_focus"] = None
         st.session_state["atlas_explorer_last_click"] = None
     focus = st.session_state.get("atlas_explorer_focus")
+    pending_zone_before = st.session_state.get(PENDING_ZONE)
     selected = candidate_number if mode == "Votação de candidato" else None
     highlight = None if zona == "Todas" else int(zona)
     cities = set(str(code) for code in municipal_shapes["map_id"])
@@ -130,13 +131,11 @@ def render_explorer(
 
     # "Município": so a malha municipal, sem camadas de detalhe.
     drill = detail != "Município"
-    district_mode = detail == ZONE_DETAIL and uf != "Todas"
-    if detail == ZONE_DETAIL and uf == "Todas":
-        st.info("Escolha uma UF para ver o mapa por zona eleitoral; "
-                "enquanto isso, clique numa cidade para ver as zonas dela.")
-    # Sem UF, o detalhamento por zona cai no comportamento automatico.
-    gate_detail = "Automático" if detail == ZONE_DETAIL and not district_mode else detail
-    base_map.add_child(ZoomPanes(explorer_gates(gate_detail)))
+    # O Atlas opera apenas em Automático: não existe mais modo de
+    # zona em tela separada. Os panes são controlados pelo zoom.
+    district_mode = False
+    # Sempre iniciar o mapa com os panes do fluxo automatico.
+    base_map.add_child(ZoomPanes(explorer_gates("Automático")))
     if section_ready:
         base_map.add_child(ClusterAssets())
 
@@ -168,17 +167,23 @@ def render_explorer(
                 if target_uf else None
             )
             if areas is not None and not areas.empty:
-                wanted = cities if uf != "Todas" else {city}
+                # Priorizar o município focado independentemente da UF:
+                # a camada estadual completa pode exceder MAX_ZONE_AREAS
+                # e truncar justamente as zonas do município clicado.
+                wanted = {city} if city else (cities if uf != "Todas" else set())
                 areas = areas.loc[[str(code) in wanted for code in areas["codigo_ibge"]]]
                 group, zone_count = zone_layer(
                     areas, zone_votes.filter(pl.col("uf") == target_uf),
                     names=names, selected_number=selected,
                     highlight_zone=highlight, pane=ZONE_PANE, labels=labels,
                 )
-                if group is not None and uf != "Todas":
+                if group is not None:
+                    # Na navegacao nacional, após clicar em uma cidade,
+                    # o Streamlit reconstroi o mapa com esta camada NO
+                    # GeoJSON inicial. Não depender de feature_group_to_add
+                    # para zonas (a ponte pode montar a pane tarde demais).
+                    # A visibilidade permanece controlada no navegador.
                     base_map.add_child(group)
-                elif group is not None:
-                    dynamic.append(group)
     except (ValueError, KeyError, OSError, pl.exceptions.PolarsError):
         zone_count = 0
         st.caption("As zonas desta área estão indisponíveis; os municípios continuam no mapa.")
@@ -194,14 +199,14 @@ def render_explorer(
     map_key = f"atlas_explorer_{key_suffix}"
 
     def on_map_change() -> None:
-        # Callback roda ANTES do rerun que o clique provoca: o mesmo rerun
-        # ja desenha a cidade focada / a zona escolhida (um rerun por clique).
-        if drill:
-            _handle_click(
-                st.session_state.get(map_key), municipal_shapes,
-                districts if district_mode else None,
-                zona=zona, current_city=city,
-            )
+        # A API streamlit-folium pode executar o callback ao montar o
+        # componente: o mapa atual talvez já tenha sido construído antes
+        # de atualizar o focus. Abaixo haverá um rerun APENAS se necessário.
+        _handle_click(
+            st.session_state.get(map_key), municipal_shapes,
+            districts if district_mode else None,
+            zona=zona, current_city=city,
+        )
 
     st_folium(
         base_map,
@@ -209,14 +214,21 @@ def render_explorer(
         on_change=on_map_change,
         height=MAP_HEIGHT,
         use_container_width=True,
-        # Somente o clique volta ao servidor: zoom/centro/bounds geravam
-        # um rerun por movimento (overlay cinza, piscar, camera resetada).
-        returned_objects=["last_object_clicked", "last_object_clicked_count"],
+        # Só eventos de clique voltam para o servidor, nunca zoom/centro.
+        # last_clicked cobre também Canvas/panes que não enviam
+        # last_object_clicked em um clique de polígono.
+        returned_objects=[
+            "last_clicked", "last_object_clicked", "last_object_clicked_count",
+        ],
         return_on_hover=False,
-        # Sem zoom/center: o enquadramento da cidade clicada e feito no
-        # navegador (map_focus.CityFocus), antes mesmo do rerun.
         feature_group_to_add=dynamic or None,
     )
+    # Proteção para versões em que o callback do componente só é invocado
+    # quando a execução alcança st_folium (após construir o Folium Map).
+    # No máximo um rerun adicional por seleção nova; zoom/pan não dispara.
+    if (st.session_state.get("atlas_explorer_focus") != focus
+            or st.session_state.get(PENDING_ZONE) != pending_zone_before):
+        st.rerun()
     if drill:
         _captions(zone_count, district_mode, report, city, detail, section_ready,
                   zones_on_zoom=uf != "Todas")
@@ -279,16 +291,36 @@ def _handle_click(
 ) -> None:
     if not response:
         return
-    click = response.get("last_object_clicked")
-    if not (isinstance(click, dict) and {"lat", "lng"} <= set(click)):
+    # O frontend mantém a coordenada do clique anterior nos dois campos.
+    # Se o Canvas atualizar só last_object_clicked, nunca reutilizar um
+    # last_clicked antigo. Escolher o evento que MUDOU neste callback.
+    previous = st.session_state.get("atlas_explorer_last_click")
+    previous = previous if isinstance(previous, dict) else {}
+
+    def coordinate_token(point: dict | None) -> tuple[float, float] | None:
+        if not isinstance(point, dict):
+            return None
+        position = valid_position(point)
+        return tuple(round(value, 6) for value in position) if position else None
+
+    map_click = response.get("last_clicked")
+    object_click = response.get("last_object_clicked")
+    map_token = coordinate_token(map_click)
+    object_token = coordinate_token(object_click)
+    object_count = response.get("last_object_clicked_count")
+    if map_token is not None and map_token != previous.get("map"):
+        click = map_click
+    elif object_token is not None and (
+        object_token != previous.get("object")
+        or object_count != previous.get("object_count")
+    ):
+        click = object_click
+    else:
         return
-    token = (
-        response.get("last_object_clicked_count"),
-        round(float(click["lat"]), 6), round(float(click["lng"]), 6),
-    )
-    if token == st.session_state.get("atlas_explorer_last_click"):
-        return
-    st.session_state["atlas_explorer_last_click"] = token
+    st.session_state["atlas_explorer_last_click"] = {
+        "map": map_token, "object": object_token,
+        "object_count": object_count,
+    }
     if districts is not None:
         # Mapa por zona: o clique seleciona a zona (preenche o seletor).
         clicked_zone = zone_at(districts, click)

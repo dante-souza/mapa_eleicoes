@@ -219,6 +219,114 @@ def assign_tracts(
     return dominant, report
 
 
+
+def _polygon_parts(geom) -> list:
+    """So partes de area de geometria reparada; nao inclui linhas/pontos."""
+    if geom is None or geom.is_empty:
+        return []
+    if geom.geom_type == "Polygon":
+        return [geom]
+    if geom.geom_type in ("MultiPolygon", "GeometryCollection"):
+        parts = []
+        for item in geom.geoms:
+            parts.extend(_polygon_parts(item))
+        return parts
+    return []
+
+
+def _repair_tracts_for_union(base: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Corrige apenas setores invalidos ANTES de GeoPandas.dissolve.
+
+    GEOS unary_union nao aceita certos aneis invalidos ("side location
+    conflict"). Corrigir a geometria da zona depois do dissolve e tarde.
+    Nao alterar IDs, pesos, zonas, nem ceder area a outro municipio.
+    """
+    if base.empty:
+        return base
+    geoms = base.geometry.values
+    invalid_positions = [
+        i for i, valid in enumerate(shapely.is_valid(geoms)) if not bool(valid)
+    ]
+    if not invalid_positions:
+        return base
+    fixed = list(geoms)
+    for pos in invalid_positions:
+        repaired = shapely.make_valid(fixed[pos])
+        polygons = _polygon_parts(repaired)
+        if not polygons:
+            setor = (
+                str(base["cd_setor"].iloc[pos])
+                if "cd_setor" in base.columns else str(pos)
+            )
+            raise ValueError(
+                f"Setor {setor} nao possui area poligonal apos make_valid; "
+                "correcao automatica seria uma perda silenciosa de dados."
+            )
+        fixed[pos] = (
+            polygons[0] if len(polygons) == 1 else shapely.union_all(polygons)
+        )
+    result = base.copy()
+    result["geometry"] = gpd.GeoSeries(fixed, index=result.index, crs=base.crs)
+    if not bool(shapely.is_valid(result.geometry.values).all()):
+        raise ValueError("Persistem setores invalidos apos make_valid")
+    print(
+        f"[ZONAS TOPOLOGIA] {len(invalid_positions)} setores reparados "
+        f"antes da uniao (GEOS make_valid)"
+    )
+    return result
+
+
+def _dissolve_tracts(
+    base: gpd.GeoDataFrame, group_columns: list[str],
+) -> gpd.GeoDataFrame:
+    """Dissolve robusto, preservando atributos e sem alterar pesos.
+
+    Primeira tentativa: somente make_valid dos setores problematicos.
+    Se GEOS ainda relatar conflito devido a precisao/limites, tenta
+    snapping de poucos centimetros no CRS metrico. Nao usar buffer
+    arbitrario nem esconder area ausente.
+    """
+    repaired = _repair_tracts_for_union(base)
+    agg = {"n_setores": "sum", "por_proximidade": "sum"}
+
+    def dissolve(frame: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        return frame.dissolve(
+            by=group_columns, aggfunc=agg, as_index=False,
+        )
+
+    try:
+        return dissolve(repaired)
+    except shapely.errors.GEOSException as initial:
+        # Grid sempre em METROS (METRIC_CRS); 1 cm, 10 cm, 1 m.
+        # O ultimo caso e contingencia, nao um ajuste padrao da malha.
+        for grid_size in (0.01, 0.1, 1.0):
+            try:
+                snapped = repaired.copy()
+                adjusted = shapely.set_precision(
+                    repaired.geometry.values, grid_size=grid_size,
+                    mode="valid_output",
+                )
+                if bool(shapely.is_empty(adjusted).any()):
+                    raise ValueError(
+                        f"Snapping {grid_size} m removeu area de algum setor"
+                    )
+                snapped["geometry"] = gpd.GeoSeries(
+                    adjusted, index=snapped.index, crs=snapped.crs,
+                )
+                result = dissolve(snapped)
+                print(
+                    f"[ZONAS TOPOLOGIA] GEOS contornado com precisao "
+                    f"de {grid_size} m; areas aproximadas"
+                )
+                return result
+            except (shapely.errors.GEOSException, ValueError):
+                continue
+        raise RuntimeError(
+            "Falha topologica apos make_valid e tentativas de precisao "
+            "(0.01, 0.1, 1.0 metros). Consulte integridade da malha IBGE."
+        ) from initial
+
+
 def dissolve_zones(
     tracts: gpd.GeoDataFrame, assignments: pl.DataFrame,
     *, simplify_meters: float = 30.0,
@@ -240,10 +348,8 @@ def dissolve_zones(
     base["zona"] = [int(row["zona"]) for row in rows]
     base["por_proximidade"] = [int(row["criterio"] == "proximidade") for row in rows]
     base["n_setores"] = 1
-    zones = base.dissolve(
-        by=["uf", "cd_municipio_tse", "codigo_ibge", "zona"],
-        aggfunc={"n_setores": "sum", "por_proximidade": "sum"},
-        as_index=False,
+    zones = _dissolve_tracts(
+        base, ["uf", "cd_municipio_tse", "codigo_ibge", "zona"]
     )
     zones["geometry"] = shapely.make_valid(zones.geometry.values)
     if simplify_meters:
@@ -300,9 +406,9 @@ def dissolve_districts(
         cities.setdefault((row["uf"], int(row["zona"])), set()).add(
             str(row["cd_municipio_tse"])
         )
-    zones = base[["uf", "zona", "n_setores", "por_proximidade", "geometry"]].dissolve(
-        by=["uf", "zona"], aggfunc={"n_setores": "sum", "por_proximidade": "sum"},
-        as_index=False,
+    zones = _dissolve_tracts(
+        base[["uf", "zona", "n_setores", "por_proximidade", "geometry"]],
+        ["uf", "zona"],
     )
     zones["geometry"] = shapely.make_valid(zones.geometry.values)
     if simplify_meters and len(zones):

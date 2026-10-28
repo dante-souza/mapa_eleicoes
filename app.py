@@ -29,6 +29,7 @@ from mapa_eleicoes.geo_payload import (
     BoundedGeoJson, feature_collection, leaflet_bounds, rounded_geometries,
 )
 from mapa_eleicoes.map_focus import CityFocus, FocusBackdrop, context_layer
+from mapa_eleicoes.map_navigation import municipal_focus_bounds
 from mapa_eleicoes.zone_geometry import UF_PREFIX
 from mapa_eleicoes.zone_map import districts_available
 
@@ -318,13 +319,36 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         highlight_function=lambda _: {"weight": 1.5, "color": "#f8f8f2"},
         tooltip=folium.GeoJsonTooltip(fields=fields, aliases=aliases, sticky=False),
     ).add_to(map_view)
-    if level == "Município" and detail != ZONE_DETAIL and len(geometry) > 1:
-        # Clique/zoom acendem a cidade e apagam as demais (no navegador).
-        map_view.add_child(CityFocus(results_layer))
+    # Sempre guardar os limites do recorte completo para o botao Voltar.
+    full_bounds = [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
+    initial_bounds = full_bounds
+    if level == "Município" and len(geometry) > 1:
+        # O navegador enquadra a cidade instantaneamente no clique.
+        # Em reruns do Streamlit, reconstruir o mapa com a câmera já
+        # enquadrada: não depender de timing do JavaScript do componente.
+        current_scope = (year, uf, cargo, turno, municipality, str(zone), mode, detail)
+        saved_focus = (
+            st.session_state.get("atlas_explorer_focus")
+            if st.session_state.get("atlas_explorer_scope") == current_scope
+            else None
+        )
+        selected_city = (
+            str(saved_focus["city"])
+            if isinstance(saved_focus, dict) and saved_focus.get("city")
+            else None
+        )
+        initial_bounds = municipal_focus_bounds(geometry, selected_city) or full_bounds
+        map_view.add_child(CityFocus(
+            results_layer, initial_focus=selected_city, home_bounds=full_bounds,
+        ))
     elif single_city:
-        # Cidade escolhida no seletor: ja nasce em destaque, fundo escuro.
-        map_view.add_child(FocusBackdrop())
-    map_view.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+        # Cidade localizada pelo seletor: mesmas regras de foco/zoom do
+        # clique no polígono, inclusive a abertura automática das zonas.
+        selected_city = str(geometry.iloc[0]["map_id"])
+        map_view.add_child(CityFocus(
+            results_layer, initial_focus=selected_city, home_bounds=full_bounds,
+        ))
+    map_view.fit_bounds(initial_bounds)
     map_view.get_root().html.add_child(folium.Element(legend_html(
         "percentual" if mode == "Votação de candidato" else "margem"
     )))
@@ -458,33 +482,19 @@ with st.sidebar:
                         format_func=zone_option)
     if zone != "Todas":
         votes = votes.filter(pl.col("zona") == zone)
-    # Sem poligonos cartograficos reais de zonas, a interface sempre
-    # usa municipios. A selecao de zona continua filtrando votos, mas
-    # nunca apresenta um municipio como poligono eleitoral de zona.
-    zone_shape_available = (DATA / "geo" / "zonas.geojson").is_file()
+    # Um único mapa: município -> zonas aproximadas -> locais pelo zoom.
+    # A seleção por UF/município/zona continua disponível na barra lateral,
+    # mas NUNCA muda o tipo de geometria nem desativa CityFocus.
     section_ready = (
         (DATA / "serving" / str(year) / "secoes" / "catalog.json").exists()
         and (DATA / "serving" / str(year) / "locais.parquet").exists()
     )
-    # O modo automático sempre começa no mapa nacional/estadual; os
-    # pontos das seções aparecem conforme a aproximação pelo mouse.
-    levels = ["Automático"] + geometry_options(zone_shape_available)
-    if not zone_shape_available and districts_available(DATA):
-        # Sem malha oficial: zona inteira aproximada (setores IBGE 2022).
-        levels.append(ZONE_DETAIL)
-    if section_ready:
-        levels.append("Seção eleitoral (locais)")
-    level = st.radio("Detalhamento geográfico", levels, index=0)
-    if level in ("Automático", "Seção eleitoral (locais)"):
-        st.caption(
-            "Navegação no próprio mapa: hover mostra resultados; "
-            "o zoom revela as zonas e o clique carrega os locais de votação."
-        )
-    elif level == ZONE_DETAIL:
-        st.caption(
-            "Zonas com contorno aproximado (setores IBGE 2022 + locais TSE), "
-            "não oficial. Clique numa zona para selecioná-la."
-        )
+    level = "Automático"
+    st.caption(
+        "Clique no município para aproximar e destacar. "
+        "As zonas eleitorais aproximadas aparecem pelo zoom quando preparadas; "
+        "os seletores também permitem localizar município e zona."
+    )
     if zone != "Todas":
         st.caption(
             "O filtro corresponde aos votos da zona, não ao perímetro "
@@ -550,12 +560,9 @@ m4.metric("Zonas representadas", votes.select(["uf", "zona"]).unique().height)
 
 left, right = st.columns([3, 1], gap="large")
 with left:
-    # Auto e seções preservam a malha municipal como base permanente.
-    # Somente o modo de zona explicito usa uma geometria real de zonas.
-    effective_level = (
-        "Município" if level in ("Automático", "Seção eleitoral (locais)", ZONE_DETAIL)
-        else level
-    )
+    # Sem seletor de detalhamento: a malha municipal é sempre a base.
+    # Zonas e locais são camadas sobrepostas controladas pelo zoom.
+    effective_level = "Município"
     polygons = load_shape(effective_level)
     if polygons is None:
         st.info("A camada territorial deste recorte não está disponível.")

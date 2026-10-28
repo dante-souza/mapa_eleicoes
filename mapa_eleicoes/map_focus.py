@@ -54,10 +54,17 @@ class CityFocus(MacroElement):
         (function (map, layer) {
             var DIM = {{ this.dim_json }}, FOCUS = {{ this.focus_json }};
             var AUTO_ZOOM = {{ this.auto_zoom }};
+            var INITIAL_CITY = {{ this.initial_focus_json }};
+            var ORIGINAL_BOUNDS = {{ this.home_bounds_json }};
             var base = layer.options.style;
-            var focus = null, afterClick = false, home = null, before = null;
-            // Enquadramento inicial: depois do fit_bounds do proprio script.
-            setTimeout(function () { home = map.getBounds(); }, 0);
+            var focus = null, afterClick = false;
+            var home = ORIGINAL_BOUNDS !== null
+                ? L.latLngBounds(ORIGINAL_BOUNDS) : null;
+            var before = null;
+            // Sem foco no servidor, guardar a vista inicial do mapa.
+            if (home === null) {
+                setTimeout(function () { home = map.getBounds(); }, 0);
+            }
 
             var Back = L.Control.extend({
                 options: {position: "topright"},
@@ -139,16 +146,68 @@ class CityFocus(MacroElement):
             document.addEventListener("keydown", function (e) {
                 if (e.key === "Escape" && focus !== null) { reset(true); }
             });
-            layer.on("click", function (e) {
-                if (!idOf(e.layer)) { return; }
-                // "Voltar" retorna a vista de antes do primeiro clique.
+            // Vincular o clique à FEIÇÃO, não ao grupo GeoJSON.
+            // MouseEvent de um GeoJSON propagado nem sempre fornece e.layer;
+            // sourceTarget é a referência moderna, mas o listener direto
+            // evita a dependência de ambos e funciona também com Canvas.
+            // A caixa de um município territorialmente grande pode caber
+            // na tela com zoom 7/8, abaixo de ZONE_ZOOM. O clique precisa
+            // revelar suas zonas; portanto o zoom mínimo é AUTO_ZOOM.
+            function zoomToCity(featureLayer) {
+                var bounds = featureLayer.getBounds();
+                var targetZoom = Math.min(
+                    AUTO_ZOOM + 2,
+                    Math.max(AUTO_ZOOM, map.getBoundsZoom(bounds, false, [24, 24]))
+                );
+                // A câmera é sempre definida pelo polígono IBGE, não por
+                // um centro estimado pelo nome/posição do eleitor.
+                map.setView(bounds.getCenter(), targetZoom, {animate: false});
+            }
+            function focusCity(featureLayer) {
+                var id = idOf(featureLayer);
+                if (!id) { return; }
                 if (focus === null) { before = map.getBounds(); }
-                setFocus(idOf(e.layer));
-                // O centro do enquadramento pode cair fora de cidade concava:
-                // o primeiro moveend (o do proprio enquadramento) nao troca o foco.
                 afterClick = true;
-                map.fitBounds(e.layer.getBounds(), {padding: [24, 24]});
+                zoomToCity(featureLayer);
+                setFocus(id);
+            }
+            var handledClick = null;
+            layer.eachLayer(function (featureLayer) {
+                if (idOf(featureLayer)) {
+                    featureLayer.on("click", function (e) {
+                        // Mesmo evento DOM propagado para map.on("click").
+                        handledClick = e.originalEvent || null;
+                        focusCity(featureLayer);
+                    });
+                }
             });
+            // Fallback: se Canvas/pane não entregar o clique à feição,
+            // recuperar o município pela coordenada no próprio mapa.
+            // Só ignora o evento se o listener direto realmente rodou.
+            map.on("click", function (e) {
+                if (e.originalEvent && handledClick === e.originalEvent) {
+                    handledClick = null;
+                    return;
+                }
+                var city = e.latlng ? cityAt(e.latlng) : null;
+                if (city) { focusCity(city); }
+            });
+
+            // st_folium pode redesenhar o componente após um clique para
+            // carregar locais de votação. Restaura foco/câmera explicitamente.
+            // Deferir até depois do fit_bounds inicial do Folium.
+            if (INITIAL_CITY !== null) {
+                setTimeout(function () {
+                    var previous = find(INITIAL_CITY);
+                    if (previous) {
+                        if (home === null) { home = map.getBounds(); }
+                        before = home;
+                        setFocus(INITIAL_CITY);
+                        afterClick = true;
+                        zoomToCity(previous);
+                    }
+                }, 0);
+            }
             map.on("moveend", function () {
                 if (afterClick) { afterClick = false; return; }
                 if (suppress) { suppress = false; return; }
@@ -164,11 +223,17 @@ class CityFocus(MacroElement):
         {% endmacro %}
     """)
 
-    def __init__(self, layer: folium.GeoJson, *, auto_zoom: int = ZONE_ZOOM):
+    def __init__(
+        self, layer: folium.GeoJson, *, auto_zoom: int = ZONE_ZOOM,
+        initial_focus: str | None = None,
+        home_bounds: list[list[float]] | None = None,
+    ):
         super().__init__()
         self._name = "CityFocus"
         self.layer = layer
         self.auto_zoom = int(auto_zoom)
+        self.initial_focus_json = json.dumps(initial_focus)
+        self.home_bounds_json = json.dumps(home_bounds)
         self.dim_json = json.dumps(DIM_STYLE)
         self.focus_json = json.dumps(FOCUS_STYLE)
         self.css = FOCUS_CSS

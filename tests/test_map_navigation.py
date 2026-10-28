@@ -64,3 +64,138 @@ def test_invalid_mouse_payload_is_rejected():
                   {"lat": float("nan"), "lng": -46},
                   {"lat": -23.5, "lng": 500}):
         assert valid_position(wrong) is None
+
+
+def test_click_events_do_not_return_zoom_or_camera_to_streamlit():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "mapa_eleicoes" /
+           "interactive_map.py").read_text(encoding="utf-8")
+    assert "on_change=on_map_change," in src
+    assert '"last_clicked", "last_object_clicked", "last_object_clicked_count"' in src
+    assert "return_on_hover=False" in src
+    assert "st.rerun()" in src
+    assert '"zoom", "center"' not in src
+
+
+def test_main_map_restores_city_only_when_filter_scope_matches():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "app.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'st.session_state.get("atlas_explorer_scope") == current_scope' in src
+    assert "municipal_focus_bounds(geometry, selected_city) or full_bounds" in src
+    assert "home_bounds=full_bounds" in src
+    assert "map_view.fit_bounds(initial_bounds)" in src
+
+
+def test_clicked_city_bounds_use_exact_ibge_polygon_not_nearest_neighbor():
+    from mapa_eleicoes.map_navigation import municipal_focus_bounds
+
+    shapes = geometry()
+    assert municipal_focus_bounds(shapes, "3550308") == [
+        [-24.0, -47.0], [-23.0, -46.0]
+    ]
+    assert municipal_focus_bounds(shapes, "3304557") == [
+        [-23.0, -44.0], [-22.0, -43.0]
+    ]
+    assert municipal_focus_bounds(shapes, "0000000") is None
+    assert municipal_focus_bounds(shapes, None) is None
+    assert municipal_focus_bounds(shapes.drop(columns=["map_id"]), "3550308") is None
+
+
+def test_map_click_coordinate_takes_priority_over_stale_feature_click():
+    from unittest.mock import patch
+    from mapa_eleicoes import interactive_map
+
+    city = geometry()
+    with patch.object(interactive_map.st, "session_state", {}):
+        interactive_map._handle_click(
+            {
+                "last_clicked": {"lat": -23.5, "lng": -46.5},
+                "last_object_clicked": {"lat": -22.5, "lng": -43.5},
+                "last_object_clicked_count": 1,
+            },
+            city, None, zona="Todas", current_city=None,
+        )
+        assert interactive_map.st.session_state["atlas_explorer_focus"] == {
+            "city": "3550308"
+        }
+
+
+def test_new_polygon_click_does_not_reuse_stale_last_clicked():
+    from unittest.mock import patch
+    from mapa_eleicoes import interactive_map
+
+    old_click = (-23.5, -46.5)
+    with patch.object(interactive_map.st, "session_state", {
+        "atlas_explorer_last_click": {
+            "map": old_click, "object": old_click, "object_count": 1,
+        },
+        "atlas_explorer_focus": {"city": "3550308"},
+    }):
+        interactive_map._handle_click(
+            {
+                "last_clicked": {"lat": old_click[0], "lng": old_click[1]},
+                "last_object_clicked": {"lat": -22.5, "lng": -43.5},
+                "last_object_clicked_count": 2,
+            },
+            geometry(), None, zona="Todas", current_city="3550308",
+        )
+        assert interactive_map.st.session_state["atlas_explorer_focus"] == {
+            "city": "3304557"
+        }
+
+
+def test_duplicate_frontend_state_does_not_reset_focus():
+    from unittest.mock import patch
+    from mapa_eleicoes import interactive_map
+
+    previous = {
+        "map": (-23.5, -46.5),
+        "object": (-23.5, -46.5),
+        "object_count": 4,
+    }
+    with patch.object(interactive_map.st, "session_state", {
+        "atlas_explorer_last_click": previous.copy(),
+        "atlas_explorer_focus": {"city": "3550308"},
+    }):
+        interactive_map._handle_click(
+            {
+                "last_clicked": {"lat": -23.5, "lng": -46.5},
+                "last_object_clicked": {"lat": -23.5, "lng": -46.5},
+                "last_object_clicked_count": 4,
+            },
+            geometry(), None, zona="Todas", current_city=None,
+        )
+        assert interactive_map.st.session_state["atlas_explorer_last_click"] == previous
+        assert interactive_map.st.session_state["atlas_explorer_focus"] == {
+            "city": "3550308"
+        }
+
+
+def test_main_page_has_one_automatic_map_no_geographical_detail_panel():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
+    assert 'level = "Automático"' in src
+    assert 'effective_level = "Município"' in src
+    assert 'st.radio("Detalhamento geográfico"' not in src
+    assert 'st.selectbox("Município"' in src
+    assert 'st.selectbox("Zona"' in src
+    assert 'CityFocus(' in src
+
+
+def test_zone_overlay_follows_the_focused_city_not_first_900_state_zones():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "mapa_eleicoes" /
+           "interactive_map.py").read_text(encoding="utf-8")
+    assert 'wanted = {city} if city else (cities if uf != "Todas" else set())' in src
+    assert 'base_map.add_child(group)' in src
+    assert 'base_map.add_child(ZoomPanes(explorer_gates("Automático")))' in src
+    assert 'gate_detail =' not in src
+    assert 'feature_group_to_add=dynamic or None' in src
+    # Camadas zonais não entram em dynamic; usado somente para locais.
+    assert 'dynamic.append(group)' not in src.split('def _site_layer(', 1)[0]
