@@ -90,3 +90,18 @@ def test_streamlit_folium_keeps_focus_code_in_component_javascript():
     assert 'map.on("click", function (e)' in component_js
     assert "map.fitBounds(featureLayer.getBounds()" in component_js
     assert "setFocus(INITIAL_CITY)" in component_js
+
+
+def test_restored_city_keeps_original_bounds_for_back_control():
+    fmap = folium.Map(location=[0, 0])
+    layer = folium.GeoJson(FC).add_to(fmap)
+    full = [[-26.0, -50.0], [-20.0, -41.0]]
+    fmap.add_child(CityFocus(
+        layer, initial_focus="3550308", home_bounds=full,
+    ))
+    html = fmap.get_root().render()
+    assert "ORIGINAL_BOUNDS" in html
+    assert "L.latLngBounds(ORIGINAL_BOUNDS)" in html
+    assert "if (home === null) { home = map.getBounds(); }" in html
+    assert "before = home;" in html
+    assert '"Voltar ao mapa completo"' in html or "Voltar ao mapa completo" in html
