@@ -30,46 +30,82 @@ ZONE_MIN_ZOOM = 11     # zoom >= 11: zonas, quando há geometria preparada
 
 
 class DeltaZoomLayers(MacroElement):
-    """Escalas territoriais exclusivas e setas Canvas em pixels da tela.
+    """Controle radio exclusivo; drill-down estado -> município -> zona.
 
-    Tudo roda no Leaflet. Não publica eventos de zoom para Streamlit e não
-    interfere no mapa principal de apuração.
+    O zoom, clique, hover e a alternância rodam no Leaflet, sem enviar
+    eventos à página Streamlit e sem modificar o Atlas principal.
     """
 
     _template = Template("""
     {% macro script(this, kwargs) %}
-    (function(map, outlines, filled, states, cities, zones, border, data, low, high) {
+    (function(map, states, cities, zones, border, data, low, high, home) {
+        var mode = "arrows";
+        var focus = null;
+        var lastStyle = null;
+        var homeBounds = L.latLngBounds(home);
         var arrowCanvas = L.DomUtil.create("canvas", "atlas-swing-arrows",
                                             map.getPanes().overlayPane);
         arrowCanvas.style.cssText = "position:absolute;pointer-events:none;z-index:430;";
         var ratio = Math.min(window.devicePixelRatio || 1, 2);
+        var backButton = null;
 
-        // Polígonos invisíveis continuam recebendo hover e tooltips,
-        // mas NENHUMA divisa municipal ou zonal é desenhada.
-        function transparent(feature, level) {
-            return {stroke: false, weight: 0, opacity: 0,
-                    fill: true, fillOpacity: 0.001};
-        }
-        function painted(feature, level) {
-            return {stroke: false, weight: 0, opacity: 0, fill: true,
-                    fillColor: feature.properties.cor,
-                    fillOpacity: feature.properties.com_dados ? 0.72 : 0.001};
-        }
-        function syncPolygon(layer, visible, level, colored) {
-            if (!layer) { return; }
-            if (visible && !map.hasLayer(layer)) { map.addLayer(layer); }
-            if (!visible && map.hasLayer(layer)) { map.removeLayer(layer); }
-            if (visible) {
-                layer.setStyle(function(f) {
-                    return colored ? painted(f, level) : transparent(f, level);
-                });
-            }
-        }
         function scaleForZoom() {
             var zoom = map.getZoom();
             if (zoom < low) { return "state"; }
             if (zoom >= high && zones) { return "zone"; }
             return "city";
+        }
+        function matchesFocus(feature) {
+            if (!focus) { return true; }
+            var p = feature.properties;
+            if (focus.kind === "state") { return p.uf === focus.uf; }
+            if (focus.kind === "city") {
+                return p.city === focus.key ||
+                       (p.key === focus.key) ||
+                       (p.key === focus.uf);
+            }
+            if (focus.kind === "zone") {
+                return p.key === focus.key ||
+                       (p.city && p.city === focus.city) ||
+                       (p.key === focus.uf);
+            }
+            return true;
+        }
+        function styleFor(feature, level, active) {
+            var matching = matchesFocus(feature);
+            if (mode === "filled") {
+                // O modo preenchido deve EXIBIR as divisões do nível
+                // visível: estados -> municípios -> zonas. Linhas finas
+                // e escuras (não brancas), evitando riscos visualmente.
+                var boundary = level === "state" ? 1.25 :
+                               level === "zone" ? 0.72 : 0.62;
+                if (!active) {
+                    // Contorno municipal de contexto acima das zonas.
+                    return {stroke: true, color: "#343246", weight: 0.85,
+                            opacity: 0.7, fill: false, fillOpacity: 0};
+                }
+                return {
+                    stroke: true, color: matching ? "#292735" : "#22212d",
+                    weight: boundary, opacity: 0.86,
+                    fill: true, fillColor: feature.properties.cor,
+                    fillOpacity: feature.properties.com_dados ?
+                                 (matching ? 0.72 : 0.15) : 0.001
+                };
+            }
+            // No modo de setas, apenas a borda estadual independente
+            // permanece visível. Municípios/zonas retêm o hover.
+            return {stroke: false, weight: 0, opacity: 0,
+                    fill: true, fillOpacity: 0.001};
+        }
+        function showLayer(layer, visible, level, active) {
+            if (!layer) { return; }
+            if (visible && !map.hasLayer(layer)) { map.addLayer(layer); }
+            if (!visible && map.hasLayer(layer)) { map.removeLayer(layer); }
+            if (visible) {
+                layer.setStyle(function(feature) {
+                    return styleFor(feature, level, active);
+                });
+            }
         }
         function paintArrow(ctx, x, y, delta, magnitude, scale) {
             var direction = delta > 0 ? -1 : 1;
@@ -81,23 +117,19 @@ class DeltaZoomLayers(MacroElement):
             var tipX = x + dx, tipY = y + dy;
             var head = len * 0.32;
             var angle = Math.atan2(dy, dx);
-            function shape() {
-                ctx.beginPath();
-                ctx.moveTo(x, y);
-                ctx.lineTo(tipX, tipY);
-                ctx.lineTo(tipX - head * Math.cos(angle - Math.PI / 6),
-                           tipY - head * Math.sin(angle - Math.PI / 6));
-                ctx.moveTo(tipX, tipY);
-                ctx.lineTo(tipX - head * Math.cos(angle + Math.PI / 6),
-                           tipY - head * Math.sin(angle + Math.PI / 6));
-                ctx.stroke();
-            }
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(tipX, tipY);
+            ctx.lineTo(tipX - head * Math.cos(angle - Math.PI / 6),
+                       tipY - head * Math.sin(angle - Math.PI / 6));
+            ctx.moveTo(tipX, tipY);
+            ctx.lineTo(tipX - head * Math.cos(angle + Math.PI / 6),
+                       tipY - head * Math.sin(angle + Math.PI / 6));
             ctx.lineCap = "round";
             ctx.lineJoin = "round";
-            // Uma única linha na cor original, sem halo ou contorno branco.
             ctx.strokeStyle = delta > 0 ? "#d60828" : "#272d97";
             ctx.lineWidth = lineWidth;
-            shape();
+            ctx.stroke();
         }
         function redraw() {
             var size = map.getSize();
@@ -110,15 +142,15 @@ class DeltaZoomLayers(MacroElement):
             arrowCanvas.height = Math.round(size.y * ratio);
             var ctx = arrowCanvas.getContext("2d");
             ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-            if (!map.hasLayer(outlines)) { return; }
+            if (mode !== "arrows") { return; }
             var scale = scaleForZoom();
             var items = data[scale] || [];
             var maximum = 1;
             items.forEach(function(row) {
                 maximum = Math.max(maximum, Math.abs(row[2]));
             });
-            // Em áreas muito densas, prioriza a maior magnitude dentro de
-            // cada célula visual, sem modificar cálculos ou dados oficiais.
+            // Limitação de sobreposição SOMENTE dos símbolos, sem mudar
+            // os votos oficiais nem as geometrias.
             var cell = scale === "state" ? 9 : scale === "zone" ? 16 : 21;
             var visible = new Map();
             items.forEach(function(row) {
@@ -140,53 +172,149 @@ class DeltaZoomLayers(MacroElement):
         }
         function sync() {
             var scale = scaleForZoom();
-            var colored = map.hasLayer(filled);
-            syncPolygon(states, scale === "state", "state", colored);
-            syncPolygon(cities, scale !== "state", "city",
-                        colored && scale === "city");
-            syncPolygon(zones, scale === "zone", "zone", colored);
-            // As áreas interativas nunca devem esconder a divisa estadual.
-            // A borda não intercepta eventos do mouse.
-            border.eachLayer(function(path) {
-                if (path.bringToFront) { path.bringToFront(); }
-            });
+            var tag = scale + "|" + mode + "|" +
+                      (focus ? focus.kind + ":" + focus.key : "all");
+            if (tag !== lastStyle) {
+                lastStyle = tag;
+                showLayer(states, scale === "state", "state", true);
+                // No zoom de zona, o município aparece como contorno
+                // de contexto, mas as zonas recebem o preenchimento.
+                showLayer(cities, scale !== "state", "city", scale === "city");
+                showLayer(zones, scale === "zone", "zone", true);
+                border.eachLayer(function(path) {
+                    if (path.bringToFront) { path.bringToFront(); }
+                });
+            }
+            if (backButton) {
+                backButton.style.display = focus ? "block" : "none";
+            }
             redraw();
         }
-        map.on("overlayadd", function(event) {
-            if (event.layer === filled && map.hasLayer(outlines)) {
-                map.removeLayer(outlines);
-            } else if (event.layer === outlines && map.hasLayer(filled)) {
-                map.removeLayer(filled);
-            }
+        function setMode(next) {
+            if (next !== "filled" && next !== "arrows") { return; }
+            mode = next;    // sempre uma e somente uma opção ativa
             sync();
+        }
+        // LayerControl clássico desenha overlays como checkboxes; em vez
+        // disso usar dois radios nativos, preservando tiles OpenStreetMap.
+        var ModeControl = L.Control.extend({
+            options: {position: "topright"},
+            onAdd: function() {
+                var box = L.DomUtil.create(
+                    "div", "leaflet-control-layers leaflet-control leaflet-control-layers-expanded"
+                );
+                box.style.cssText = "background:#282a36;color:#f8f8f2;" +
+                    "padding:9px 12px;border:1px solid #6272a4;border-radius:6px;";
+                L.DomEvent.disableClickPropagation(box);
+                L.DomEvent.disableScrollPropagation(box);
+                var options = [
+                    ["arrows", "Divisões + setas"],
+                    ["filled", "Áreas por delta (sem setas)"]
+                ];
+                options.forEach(function(option) {
+                    var label = L.DomUtil.create("label", "", box);
+                    label.style.cssText = "display:block;white-space:nowrap;" +
+                                          "cursor:pointer;padding:3px 0;";
+                    var input = L.DomUtil.create("input", "", label);
+                    input.type = "radio";
+                    input.name = "atlas-delta-mode-" + map._leaflet_id;
+                    input.value = option[0];
+                    input.checked = option[0] === mode;
+                    input.style.marginRight = "7px";
+                    var caption = L.DomUtil.create("span", "", label);
+                    caption.textContent = option[1];
+                    L.DomEvent.on(input, "change", function() {
+                        if (input.checked) { setMode(option[0]); }
+                    });
+                });
+                return box;
+            }
         });
-        map.on("overlayremove", sync);
+        new ModeControl().addTo(map);
+
+        function resetFocus() {
+            if (!focus) { return; }
+            focus = null;
+            map.fitBounds(homeBounds, {padding: [12, 12], animate: false});
+            sync();
+        }
+        var BackControl = L.Control.extend({
+            options: {position: "topright"},
+            onAdd: function() {
+                backButton = L.DomUtil.create("button", "leaflet-control");
+                backButton.type = "button";
+                backButton.textContent = "← Voltar ao mapa completo";
+                backButton.style.cssText = "display:none;padding:7px 12px;" +
+                    "background:#282a36;color:#f8f8f2;border:1px solid #6272a4;" +
+                    "border-radius:6px;cursor:pointer;";
+                L.DomEvent.disableClickPropagation(backButton);
+                L.DomEvent.on(backButton, "click", resetFocus);
+                return backButton;
+            }
+        });
+        new BackControl().addTo(map);
+        document.addEventListener("keydown", function(e) {
+            if (e.key === "Escape") { resetFocus(); }
+        });
+
+        function zoomInto(layer, kind) {
+            var props = layer.feature && layer.feature.properties;
+            if (!props || !layer.getBounds) { return; }
+            var bounds = layer.getBounds();
+            if (!bounds.isValid()) { return; }
+            var target = map.getBoundsZoom(bounds, false, [24, 24]);
+            if (kind === "state") {
+                target = Math.min(low + 2, Math.max(low, target));
+            } else if (kind === "city") {
+                // Mesmo princípio do Atlas: o clique municipal deve
+                // alcançar o zoom zonal quando a malha estiver pronta.
+                target = Math.min(high + 2, Math.max(high, target));
+            } else {
+                target = Math.min(high + 4, Math.max(high + 1, target));
+            }
+            focus = {kind: kind, key: props.key, uf: props.uf,
+                     city: props.city};
+            map.setView(bounds.getCenter(), target, {animate: false});
+            sync();
+        }
+        function bindClicks(layer, kind) {
+            if (!layer) { return; }
+            layer.eachLayer(function(shape) {
+                shape.on("click", function(e) {
+                    if (e.originalEvent) {
+                        L.DomEvent.stopPropagation(e.originalEvent);
+                    }
+                    zoomInto(shape, kind);
+                });
+            });
+        }
+        bindClicks(states, "state");
+        bindClicks(cities, "city");
+        bindClicks(zones, "zone");
         map.on("zoomend moveend resize", sync);
         sync();
     })({{ this._parent.get_name() }},
-       {{ this.outlines.get_name() }}, {{ this.filled.get_name() }},
        {{ this.states.get_name() }}, {{ this.municipal.get_name() }},
        {% if this.zones %}{{ this.zones.get_name() }}{% else %}null{% endif %},
        {{ this.border.get_name() }},
-       {{ this.arrow_data_json }}, {{ this.low }}, {{ this.high }});
+       {{ this.arrow_data_json }}, {{ this.low }}, {{ this.high }},
+       {{ this.home_bounds_json }});
     {% endmacro %}
     """)
 
     def __init__(
-        self, outlines: folium.FeatureGroup, filled: folium.FeatureGroup,
-        states: folium.GeoJson, municipal: folium.GeoJson,
+        self, states: folium.GeoJson, municipal: folium.GeoJson,
         zones: folium.GeoJson | None, border: folium.GeoJson,
-        arrow_data: dict,
+        arrow_data: dict, home_bounds: list[list[float]],
     ) -> None:
         super().__init__()
         self._name = "DeltaZoomLayers"
-        self.outlines = outlines
-        self.filled = filled
         self.states = states
         self.municipal = municipal
         self.zones = zones
         self.border = border
         self.arrow_data_json = json.dumps(arrow_data, separators=(",", ":"))
+        self.home_bounds_json = json.dumps(home_bounds)
         self.low = STATE_MAX_ZOOM
         self.high = ZONE_MIN_ZOOM
 
@@ -264,12 +392,30 @@ def _polygon_tooltip() -> folium.GeoJsonTooltip:
 def _polygons(geo: gpd.GeoDataFrame, *, approx_zone: bool) -> dict:
     geometry_cache = rounded_geometries(geo[["_key", "geometry"]], key="_key")
     features = []
-    for key, vote in zip(geo["_key"], geo["_vote"]):
+    has_city_code = "codigo_ibge" in geo.columns
+    for index, (key, vote) in enumerate(zip(geo["_key"], geo["_vote"])):
         data = geometry_cache.get(str(key))
         if data is not None:
+            identifier = str(key)
+            properties = _vote_properties(vote, approx_zone=approx_zone)
+            properties["key"] = identifier
+            properties["uf"] = (
+                identifier.split(":")[0] if ":" in identifier
+                else identifier if len(identifier) == 2
+                else next(
+                    (uf for uf, prefix in UF_PREFIX.items()
+                     if identifier.startswith(prefix)),
+                    "",
+                )
+            )
+            properties["city"] = (
+                str(geo["codigo_ibge"].iloc[index])
+                if has_city_code and geo["codigo_ibge"].iloc[index] is not None
+                else identifier if len(identifier) == 7 else ""
+            )
             features.append({
                 "type": "Feature", "geometry": data,
-                "properties": _vote_properties(vote, approx_zone=approx_zone),
+                "properties": properties,
             })
     return {"type": "FeatureCollection", "features": features}
 
@@ -463,12 +609,6 @@ def delta_map(
     state_geo = _state_geography(municipal, states or [])
     if state_geo.empty:
         raise ValueError("Sem contornos estaduais correspondentes à malha municipal.")
-    outline_mode = folium.FeatureGroup(
-        name="Divisões + setas", overlay=True, control=True, show=True,
-    ).add_to(map_view)
-    filled_mode = folium.FeatureGroup(
-        name="Áreas por delta (sem setas)", overlay=True, control=True, show=False,
-    ).add_to(map_view)
     state_layer = BoundedGeoJson(
         _polygons(state_geo, approx_zone=False), bounds=bounds,
         control=False, show=False,
@@ -511,9 +651,8 @@ def delta_map(
         "zone": _canvas_data(zones),
     }
     map_view.add_child(DeltaZoomLayers(
-        outline_mode, filled_mode, state_layer, municipal_layer,
-        zone_layer, state_border, arrows,
+        state_layer, municipal_layer, zone_layer, state_border,
+        arrows, bounds,
     ))
-    folium.LayerControl(position="topright", collapsed=False).add_to(map_view)
     map_view.fit_bounds(bounds)
     return map_view
