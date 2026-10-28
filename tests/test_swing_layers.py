@@ -170,7 +170,7 @@ def test_filled_mode_draws_divisions_for_active_geographic_zoom():
 
     source = inspect.getsource(DeltaZoomLayers)
     assert 'if (mode === "filled")' in source
-    assert 'stroke: true, color: matching' in source
+    assert 'color: highlighted ? "#f8f8f2"' in source
     assert 'weight: boundary' in source
     assert 'level === "state" ? 1.25' in source
     assert 'level === "zone" ? 0.72' in source
@@ -257,6 +257,8 @@ def test_zone_hover_retains_name_and_voting_information_without_inner_lines():
     props = zonal.data["features"][0]["properties"]
     assert "Cidade 1" in props["regiao"]
     assert "Zona 1" in props["regiao"]
+    assert props["key"] == "SP:100:1"
+    assert props["uf"] == "SP"
     assert props["delta"] == "-10"
     tooltips = [x for x in zonal._children.values()
                 if isinstance(x, folium.GeoJsonTooltip)]
@@ -265,6 +267,21 @@ def test_zone_hover_retains_name_and_voting_information_without_inner_lines():
         tooltips[0].fields
     )
     assert layers[-1].options["interactive"] is False
+
+
+def test_selected_polygon_highlight_is_separate_from_arrow_stroke():
+    from mapa_eleicoes.swing_layers import DeltaZoomLayers
+    import inspect
+
+    source = inspect.getsource(DeltaZoomLayers)
+    assert 'var highlighted = focus &&' in source
+    assert 'color: highlighted ? "#f8f8f2"' in source
+    assert 'if (focus.kind === "city")' in source
+    assert 'if (focus.kind === "zone")' in source
+    # Branco é permitido APENAS na linha do polígono selecionado;
+    # a seta em si permanece um único stroke vermelho/azul, sem halo.
+    assert source.count('ctx.strokeStyle =') == 1
+    assert 'ctx.strokeStyle = delta > 0 ? "#d60828" : "#272d97"' in source
 
 
 def test_original_map_page_runs_as_classic_streamlit_homepage():
