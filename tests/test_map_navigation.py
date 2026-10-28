@@ -66,13 +66,16 @@ def test_invalid_mouse_payload_is_rejected():
         assert valid_position(wrong) is None
 
 
-def test_municipality_only_mode_does_not_send_clicks_to_streamlit():
+def test_click_events_do_not_return_zoom_or_camera_to_streamlit():
     from pathlib import Path
 
     src = (Path(__file__).resolve().parents[1] / "mapa_eleicoes" /
            "interactive_map.py").read_text(encoding="utf-8")
-    assert "on_change=on_map_change if drill else None" in src
-    assert '["last_object_clicked", "last_object_clicked_count"] if drill else []' in src
+    assert "on_change=on_map_change," in src
+    assert '"last_clicked", "last_object_clicked", "last_object_clicked_count"' in src
+    assert "return_on_hover=False" in src
+    assert "st.rerun()" in src
+    assert '"zoom", "center"' not in src
 
 
 def test_main_map_restores_city_only_when_filter_scope_matches():
@@ -82,4 +85,40 @@ def test_main_map_restores_city_only_when_filter_scope_matches():
         encoding="utf-8"
     )
     assert 'st.session_state.get("atlas_explorer_scope") == current_scope' in src
-    assert "CityFocus(results_layer, initial_focus=selected_city)" in src
+    assert "municipal_focus_bounds(geometry, selected_city) or full_bounds" in src
+    assert "home_bounds=full_bounds" in src
+    assert "map_view.fit_bounds(initial_bounds)" in src
+
+
+def test_clicked_city_bounds_use_exact_ibge_polygon_not_nearest_neighbor():
+    from mapa_eleicoes.map_navigation import municipal_focus_bounds
+
+    shapes = geometry()
+    assert municipal_focus_bounds(shapes, "3550308") == [
+        [-24.0, -47.0], [-23.0, -46.0]
+    ]
+    assert municipal_focus_bounds(shapes, "3304557") == [
+        [-23.0, -44.0], [-22.0, -43.0]
+    ]
+    assert municipal_focus_bounds(shapes, "0000000") is None
+    assert municipal_focus_bounds(shapes, None) is None
+    assert municipal_focus_bounds(shapes.drop(columns=["map_id"]), "3550308") is None
+
+
+def test_map_click_coordinate_takes_priority_over_stale_feature_click():
+    from unittest.mock import patch
+    from mapa_eleicoes import interactive_map
+
+    city = geometry()
+    with patch.object(interactive_map.st, "session_state", {}):
+        interactive_map._handle_click(
+            {
+                "last_clicked": {"lat": -23.5, "lng": -46.5},
+                "last_object_clicked": {"lat": -22.5, "lng": -43.5},
+                "last_object_clicked_count": 1,
+            },
+            city, None, zona="Todas", current_city=None,
+        )
+        assert interactive_map.st.session_state["atlas_explorer_focus"] == {
+            "city": "3550308"
+        }
