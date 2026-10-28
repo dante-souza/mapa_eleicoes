@@ -297,3 +297,57 @@ browser com os Parquets locais. Não fazer merge até o operador confirmar
 o resultado. A causa exata do problema intermitente não foi reproduzida
 no navegador durante esta revisão; as alterações protegem contra as
 rotas de rerun e de evento obsoleto identificadas no código.
+
+## Atlas principal — navegação unificada por zoom, clique e seletores
+
+Revisão solicitada após o relato de que a opção manual **Zona eleitoral
+(aproximada)** impedia o zoom esperado. A página `Deltas e viradas`
+está aprovada e **não foi modificada** nesta revisão.
+
+### Fluxo único
+
+- **Removido** o painel de radio `Detalhamento geográfico`. A interface do
+  Atlas usa internamente apenas `level = "Automático"` e a camada
+  municipal do IBGE como base, preservando a visualização de votação.
+- Clique no polígono municipal faz foco, escurece o contexto e define a câmera
+  no centro do município, com **zoom mínimo 10** (`ZONE_ZOOM`). Municípios
+  extensos deixam de parar em zoom 7/8, no qual a camada zonal fica oculta.
+- Município escolhido no **seletor** recebe a mesma lógica de `CityFocus`
+  (incluindo zoom zonal mínimo e fundo escurecido), sem depender de uma
+  opção de detalhamento manual.
+- A camada de zonas aproximadas para a cidade em foco é montada na árvore
+  base do Folium, não em um grupo dinâmico adicionado posteriormente pelo
+  `streamlit-folium`. Isso permite que o pane
+  `atlasZonasCidade` siga o zoom do Leaflet.
+- Seleção de cidade tem prioridade sobre o carregamento indiscriminado de
+  uma UF: mesmo nas UFs com mais de 900 zonas, as zonas do município
+  clicado não são eliminadas pelo limite da camada.
+- Em zoom `ZONE_ZOOM=10`, áreas aproximadas de zona aparecem, quando
+  disponíveis. Em `SITE_ZOOM=12`, os locais oficiais podem aparecer, caso
+  a preparação de seções/locais tenha sido feita.
+- **UF, Município e Zona** permanecem selecionáveis e pesquisáveis na
+  barra lateral. Filtrar uma zona usa seus votos reais e não a apresenta
+  como perímetro legal/oficial.
+- Quando o arquivo `data/geo/zonas/zonas_municipio_UF.geojson` não está
+  preparado, o Atlas não inventa zonas: mantém mapa municipal e informa
+  a indisponibilidade no caption.
+
+### Teste local obrigatório
+
+Encerre o processo atual do Streamlit (`Ctrl+C`) e, na branch do PR:
+
+```powershell
+git fetch origin
+git merge --ff-only origin/feature/deltas-viradas-municipio-zona-20261027
+make test
+make preview ANO=2026
+```
+
+Verifique o caso da captura com **UF=Todas**, clique em **Rio Verde**,
+confirme foco/escurecimento/zoom >=10 e visualização das zonas se a
+geometria de GO estiver preparada. Repita via seletor de Município e
+Zona; confirme a retirada do painel de detalhamento. Ao aproximar
+mais, conferir locais se disponíveis. Verifique também **Voltar/Esc**.
+
+A visualização com os Parquets reais e o navegador ainda precisa de
+aceitação antes do merge do PR #11.
