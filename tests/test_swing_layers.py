@@ -171,7 +171,7 @@ def test_filled_mode_draws_divisions_for_active_geographic_zoom():
     source = inspect.getsource(DeltaZoomLayers)
     assert 'if (mode === "filled")' in source
     assert 'color: highlighted ? "#f8f8f2"' in source
-    assert 'weight: boundary' in source
+    assert 'weight: highlighted ? 2.0 : boundary' in source
     assert 'level === "state" ? 1.25' in source
     assert 'level === "zone" ? 0.72' in source
     assert 'stroke: false, weight: 0' in source  # modo setas sem divisões internas
