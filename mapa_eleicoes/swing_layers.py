@@ -48,6 +48,8 @@ class DeltaZoomLayers(MacroElement):
         arrowCanvas.style.cssText = "position:absolute;pointer-events:none;z-index:430;";
         var ratio = Math.min(window.devicePixelRatio || 1, 2);
         var backButton = null;
+        var drawFrame = null;
+        var drawing = false;
 
         function scaleForZoom() {
             var zoom = map.getZoom();
@@ -185,6 +187,19 @@ class DeltaZoomLayers(MacroElement):
                            Math.abs(item.delta) / maximum, scale);
             });
         }
+        // O pan não deve reestilizar milhares de polígonos nem criar
+        // um Canvas novo para cada evento. Coalescer todos os pedidos em
+        // um único frame. O mapa permanece draggable durante a operação.
+        function scheduleRedraw() {
+            if (drawFrame !== null) { return; }
+            drawFrame = L.Util.requestAnimFrame(function() {
+                drawFrame = null;
+                if (drawing) { return; }
+                drawing = true;
+                try { redraw(); }
+                finally { drawing = false; }
+            });
+        }
         function sync() {
             var scale = scaleForZoom();
             var tag = scale + "|" + mode + "|" +
@@ -203,10 +218,11 @@ class DeltaZoomLayers(MacroElement):
             if (backButton) {
                 backButton.style.display = focus ? "block" : "none";
             }
-            redraw();
+            scheduleRedraw();
         }
         function setMode(next) {
             if (next !== "filled" && next !== "arrows") { return; }
+            if (mode === next) { return; }
             mode = next;    // sempre uma e somente uma opção ativa
             sync();
         }
@@ -296,9 +312,11 @@ class DeltaZoomLayers(MacroElement):
             if (!layer) { return; }
             layer.eachLayer(function(shape) {
                 shape.on("click", function(e) {
-                    if (e.originalEvent) {
-                        L.DomEvent.stopPropagation(e.originalEvent);
-                    }
+                    // Não capturar a propagação nativa do mouse: ela é
+                    // necessária ao pan/drag do Leaflet. Eventos de
+                    // arrasto não devem produzir foco involuntário.
+                    if (map.dragging && typeof map.dragging.moved === "function"
+                            && map.dragging.moved()) { return; }
                     zoomInto(shape, kind);
                 });
             });
@@ -306,7 +324,10 @@ class DeltaZoomLayers(MacroElement):
         bindClicks(states, "state");
         bindClicks(cities, "city");
         bindClicks(zones, "zone");
-        map.on("zoomend moveend resize", sync);
+        // Somente zoom altera a camada de polígonos. Arrastar o mapa
+        // atualiza APENAS o Canvas de setas, uma vez por quadro.
+        map.on("zoomend", sync);
+        map.on("moveend resize", scheduleRedraw);
         sync();
     })({{ this._parent.get_name() }},
        {{ this.states.get_name() }}, {{ this.municipal.get_name() }},
