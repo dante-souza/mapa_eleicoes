@@ -400,3 +400,41 @@ Testar os dois radios, contornos do modo preenchido e cliques nas
 transições de zoom 6→7→11. Verificar o `Esc`/`Voltar` e, em outra aba
 ou página, se o clique e o foco do **Atlas Eleitoral principal** seguem
 normais. A PR permanece draft até essa validação no Windows.
+
+## Correção de responsividade — zoom e pan sem travamento
+
+Após o primeiro teste no navegador do controle de radios exclusivos, o
+usuário observou travamento e impossibilidade de **arrastar o mapa**
+ao dar zoom. A hipótese técnica identificada no JavaScript era uma
+interferência de processamento entre o evento de deslocamento do Leaflet,
+a reaplicação dos estilos da malha e o desenho síncrono das setas.
+
+O mapa de **Deltas e viradas** passou a separar esses eventos:
+
+- `zoomend` → `sync()`: altera a escala territorial e reaplica o estilo
+  das geometrias **somente quando modo, nível ou foco mudam**.
+- `moveend` e `resize` → `scheduleRedraw()`: apenas atualizam o
+  Canvas de setas após o pan/resize, **sem** reestilizar municípios/zonas,
+  recalcular limites ou modificar o centro/zoom.
+- `L.Util.requestAnimFrame()` consolida redesenhos concorrentes em um
+  quadro; o Canvas continua com `pointer-events:none`.
+- O click dos polígonos não usa mais `stopPropagation` no evento nativo,
+  evitando interferência com o `drag`. A navegação por clique só ocorre
+  quando `map.dragging.moved()` não indicou um arrasto.
+- A paleta eleitoral, os radios exclusivos, as divisões no modo
+  preenchido, tooltips, `Esc` e Voltar foram preservados.
+- **Escopo:** somente `mapa_eleicoes/swing_layers.py`, seu teste e
+  esta documentação. O Atlas principal não sofreu modificações.
+
+### Checagem de aceitação
+
+Com o servidor anterior encerrado, atualizar a branch pelo Git/Makefile
+e executar `make test`, depois `make preview ANO=2026`.
+No navegador, repetir pelo menos: clicar em uma UF, aproximar e arrastar
+livremente; rolar o zoom várias vezes; alternar os dois radios e arrastar;
+clicar em município/zona e repetir o pan; testar Esc/Voltar.
+Verificar que os tooltips ainda acompanham a região sob o cursor e que
+nenhum deslocamento comum provoca novo foco ou retorno da câmera.
+
+**Validação ainda pendente** com os dados locais e o Firefox/Chromium do
+usuário; o teste estático de eventos não substitui esta validação visual.
