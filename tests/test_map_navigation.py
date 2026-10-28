@@ -122,3 +122,54 @@ def test_map_click_coordinate_takes_priority_over_stale_feature_click():
         assert interactive_map.st.session_state["atlas_explorer_focus"] == {
             "city": "3550308"
         }
+
+
+def test_new_polygon_click_does_not_reuse_stale_last_clicked():
+    from unittest.mock import patch
+    from mapa_eleicoes import interactive_map
+
+    old_click = (-23.5, -46.5)
+    with patch.object(interactive_map.st, "session_state", {
+        "atlas_explorer_last_click": {
+            "map": old_click, "object": old_click, "object_count": 1,
+        },
+        "atlas_explorer_focus": {"city": "3550308"},
+    }):
+        interactive_map._handle_click(
+            {
+                "last_clicked": {"lat": old_click[0], "lng": old_click[1]},
+                "last_object_clicked": {"lat": -22.5, "lng": -43.5},
+                "last_object_clicked_count": 2,
+            },
+            geometry(), None, zona="Todas", current_city="3550308",
+        )
+        assert interactive_map.st.session_state["atlas_explorer_focus"] == {
+            "city": "3304557"
+        }
+
+
+def test_duplicate_frontend_state_does_not_reset_focus():
+    from unittest.mock import patch
+    from mapa_eleicoes import interactive_map
+
+    previous = {
+        "map": (-23.5, -46.5),
+        "object": (-23.5, -46.5),
+        "object_count": 4,
+    }
+    with patch.object(interactive_map.st, "session_state", {
+        "atlas_explorer_last_click": previous.copy(),
+        "atlas_explorer_focus": {"city": "3550308"},
+    }):
+        interactive_map._handle_click(
+            {
+                "last_clicked": {"lat": -23.5, "lng": -46.5},
+                "last_object_clicked": {"lat": -23.5, "lng": -46.5},
+                "last_object_clicked_count": 4,
+            },
+            geometry(), None, zona="Todas", current_city=None,
+        )
+        assert interactive_map.st.session_state["atlas_explorer_last_click"] == previous
+        assert interactive_map.st.session_state["atlas_explorer_focus"] == {
+            "city": "3550308"
+        }
