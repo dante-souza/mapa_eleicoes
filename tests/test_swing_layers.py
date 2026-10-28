@@ -43,34 +43,36 @@ def polygon_properties(mapa):
 
 
 
-def test_two_overlays_are_exclusive_and_tiles_remain_visible():
+def test_radio_modes_are_mutually_exclusive_and_keep_osm_tiles():
     mapa = delta_map(sample())
-    groups = [c for c in mapa._children.values() if isinstance(c, folium.FeatureGroup)]
-    assert [(g.layer_name, g.show) for g in groups] == [
-        ("Divisões + setas", True),
-        ("Áreas por delta (sem setas)", False),
-    ]
     html = mapa.get_root().render()
-    assert 'map.on("overlayadd"' in html
-    assert 'map.on("overlayremove"' in html
-    assert "syncPolygon(states, scale === \"state\"" in html
-    assert 'map.on("zoomend moveend resize", sync)' in html
-    assert 'if (zoom < low)' in html
-    assert 'if (zoom >= high && zones)' in html
-    assert "paintArrow(ctx" in html
-    assert "arrowCanvas" in html
+    # A alternativa original Overlay/checkbox permitia ligar as duas;
+    # radios partilham o mesmo name e sempre mantêm exatamente uma opção.
+    assert 'input.type = "radio"' in html
+    assert 'input.name = "atlas-delta-mode-" + map._leaflet_id' in html
+    assert 'input.checked = option[0] === mode' in html
+    assert 'if (input.checked) { setMode(option[0]); }' in html
+    assert 'mode = next;' in html
+    assert 'mode = "arrows"' in html
+    assert 'Divisões + setas' in html
+    assert 'Áreas por delta (sem setas)' in html
+    assert "L.control.layers(" not in html
     assert "openstreetmap.org" in html
-    assert 'scale === "state"' in html
-    assert 'scale === "city"' in html
-    # Duas malhas: estado dissolvido e municípios; setas só em Canvas.
+    # As mudanças de modo não alteram zoom, centro ou mapa-base.
+    assert 'map.on("zoomend moveend resize", sync)' in html
+    assert 'redraw()' in html
+    assert "paintArrow(ctx" in html
+    assert 'atlas-swing-arrows' in html
+    assert 'scale === "state"' in html and 'scale === "city"' in html
     assert html.count("L.geoJson(") == 3
     assert "L.marker(" not in html
     props = polygon_properties(mapa)
-    assert len(props) == 2
     missing = [prop for prop in props if not prop["com_dados"]]
+    assert len(props) == 2
     assert len(missing) == 1
     assert missing[0]["regiao"] == "Sem dados comparáveis"
     assert missing[0]["delta"] == "—"
+
 
 
 def test_arrow_geometry_is_directional_without_markers():
@@ -162,32 +164,63 @@ def test_arrows_are_screen_sized_and_preserve_colors():
     assert "new Map()" in html  # redução visual de sobreposições
 
 
-def test_only_state_boundaries_drawn_at_every_zoom():
+def test_filled_mode_draws_divisions_for_active_geographic_zoom():
     from mapa_eleicoes.swing_layers import DeltaZoomLayers
     import inspect
 
     source = inspect.getsource(DeltaZoomLayers)
-    assert "stroke: false, weight: 0" in source  # município/zona ocultos
-    assert "fillOpacity: 0.001" in source  # captura do hover preservada
-    assert "syncPolygon(states, scale === \"state\"" in source
-    assert "syncPolygon(cities, scale !== \"state\"" in source
-    # A borda estadual fica numa camada própria, sempre ligada;
-    # os dois modos de delta usam a mesma geometria de hover.
+    assert 'if (mode === "filled")' in source
+    assert 'stroke: true, color: matching' in source
+    assert 'weight: boundary' in source
+    assert 'level === "state" ? 1.25' in source
+    assert 'level === "zone" ? 0.72' in source
+    assert 'stroke: false, weight: 0' in source  # modo setas sem divisões internas
+    assert 'showLayer(states, scale === "state"' in source
+    assert 'showLayer(cities, scale !== "state"' in source
+    assert 'showLayer(zones, scale === "zone"' in source
+    assert 'scale === "zone"' in source
     fmap = delta_map(sample())
     layers = [child for child in fmap._children.values()
               if isinstance(child, folium.GeoJson)]
     assert len(layers) == 3
     border = layers[-1]
     assert border.options.get("interactive") is False
-    assert not any(isinstance(x, folium.GeoJsonTooltip) for x in border._children.values())
-    # Hover municipal permanece disponível mesmo sem stroke/cartografia interna.
+    assert not any(isinstance(x, folium.GeoJsonTooltip)
+                   for x in border._children.values())
     assert any(isinstance(x, folium.GeoJsonTooltip)
                for x in layers[1]._children.values())
     html = fmap.get_root().render()
     assert 'interactive": false' in html
-    assert '"stroke": false' in html
     assert 'border.eachLayer(function(path)' in html
-    assert "map.on(\"zoomend moveend resize\", sync)" in html
+
+
+def test_click_zoom_transitions_and_focus_reset_like_atlas():
+    html = delta_map(sample()).get_root().render()
+    assert 'bindClicks(states, "state")' in html
+    assert 'bindClicks(cities, "city")' in html
+    assert 'bindClicks(zones, "zone")' in html
+    assert 'zoomInto(shape, kind)' in html
+    assert 'target = Math.min(low + 2, Math.max(low, target))' in html
+    assert 'target = Math.min(high + 2, Math.max(high, target))' in html
+    assert 'map.setView(bounds.getCenter(), target' in html
+    assert 'map.fitBounds(homeBounds' in html
+    assert '← Voltar ao mapa completo' in html
+    assert 'e.key === "Escape"' in html
+    assert 'L.DomEvent.stopPropagation(e.originalEvent)' in html
+    assert 'setMode(' in html
+
+
+def test_region_keys_available_for_state_city_and_zonal_clicks():
+    fmap = delta_map(sample())
+    layers = [child for child in fmap._children.values()
+              if isinstance(child, folium.GeoJson)]
+    state = layers[0].data["features"][0]["properties"]
+    cities = layers[1].data["features"]
+    assert state["key"] == "SP" and state["uf"] == "SP"
+    assert cities[0]["properties"]["key"] == "3550308"
+    assert cities[0]["properties"]["uf"] == "SP"
+    assert cities[0]["properties"]["city"] == "3550308"
+
 
 
 def test_state_border_ignores_internal_holes_from_simplified_municipalities():
