@@ -167,7 +167,10 @@ def render_explorer(
                 if target_uf else None
             )
             if areas is not None and not areas.empty:
-                wanted = cities if uf != "Todas" else {city}
+                # Priorizar o município focado independentemente da UF:
+                # a camada estadual completa pode exceder MAX_ZONE_AREAS
+                # e truncar justamente as zonas do município clicado.
+                wanted = {city} if city else (cities if uf != "Todas" else set())
                 areas = areas.loc[[str(code) in wanted for code in areas["codigo_ibge"]]]
                 group, zone_count = zone_layer(
                     areas, zone_votes.filter(pl.col("uf") == target_uf),
