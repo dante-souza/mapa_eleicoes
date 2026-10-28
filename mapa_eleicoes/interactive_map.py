@@ -119,6 +119,7 @@ def render_explorer(
         st.session_state["atlas_explorer_focus"] = None
         st.session_state["atlas_explorer_last_click"] = None
     focus = st.session_state.get("atlas_explorer_focus")
+    pending_zone_before = st.session_state.get(PENDING_ZONE)
     selected = candidate_number if mode == "Votação de candidato" else None
     highlight = None if zona == "Todas" else int(zona)
     cities = set(str(code) for code in municipal_shapes["map_id"])
@@ -194,32 +195,36 @@ def render_explorer(
     map_key = f"atlas_explorer_{key_suffix}"
 
     def on_map_change() -> None:
-        # Callback roda ANTES do rerun que o clique provoca: o mesmo rerun
-        # ja desenha a cidade focada / a zona escolhida (um rerun por clique).
-        if drill:
-            _handle_click(
-                st.session_state.get(map_key), municipal_shapes,
-                districts if district_mode else None,
-                zona=zona, current_city=city,
-            )
+        # A API streamlit-folium pode executar o callback ao montar o
+        # componente: o mapa atual talvez já tenha sido construído antes
+        # de atualizar o focus. Abaixo haverá um rerun APENAS se necessário.
+        _handle_click(
+            st.session_state.get(map_key), municipal_shapes,
+            districts if district_mode else None,
+            zona=zona, current_city=city,
+        )
 
     st_folium(
         base_map,
         key=map_key,
-        on_change=on_map_change if drill else None,
+        on_change=on_map_change,
         height=MAP_HEIGHT,
         use_container_width=True,
-        # No modo municipal puro, TODOS os cliques/zooms são do Leaflet.
-        # Não enviar cliques ao Streamlit: evitar rerun que remonta a câmera.
-        # No drill-down, enviar apenas clique para carregar locais de votação.
-        returned_objects=(
-            ["last_object_clicked", "last_object_clicked_count"] if drill else []
-        ),
+        # Só eventos de clique voltam para o servidor, nunca zoom/centro.
+        # last_clicked cobre também Canvas/panes que não enviam
+        # last_object_clicked em um clique de polígono.
+        returned_objects=[
+            "last_clicked", "last_object_clicked", "last_object_clicked_count",
+        ],
         return_on_hover=False,
-        # Sem zoom/center: o enquadramento da cidade clicada e feito no
-        # navegador (map_focus.CityFocus), antes mesmo do rerun.
         feature_group_to_add=dynamic or None,
     )
+    # Proteção para versões em que o callback do componente só é invocado
+    # quando a execução alcança st_folium (após construir o Folium Map).
+    # No máximo um rerun adicional por seleção nova; zoom/pan não dispara.
+    if (st.session_state.get("atlas_explorer_focus") != focus
+            or st.session_state.get(PENDING_ZONE) != pending_zone_before):
+        st.rerun()
     if drill:
         _captions(zone_count, district_mode, report, city, detail, section_ready,
                   zones_on_zoom=uf != "Todas")
@@ -282,7 +287,9 @@ def _handle_click(
 ) -> None:
     if not response:
         return
-    click = response.get("last_object_clicked")
+    # Clique geográfico global primeiro: mais estável que o clique de
+    # feição para polígonos grandes e para Canvas. Fallback legado depois.
+    click = response.get("last_clicked") or response.get("last_object_clicked")
     if not (isinstance(click, dict) and {"lat", "lng"} <= set(click)):
         return
     token = (
