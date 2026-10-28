@@ -55,10 +55,16 @@ class CityFocus(MacroElement):
             var DIM = {{ this.dim_json }}, FOCUS = {{ this.focus_json }};
             var AUTO_ZOOM = {{ this.auto_zoom }};
             var INITIAL_CITY = {{ this.initial_focus_json }};
+            var ORIGINAL_BOUNDS = {{ this.home_bounds_json }};
             var base = layer.options.style;
-            var focus = null, afterClick = false, home = null, before = null;
-            // Enquadramento inicial: depois do fit_bounds do proprio script.
-            setTimeout(function () { home = map.getBounds(); }, 0);
+            var focus = null, afterClick = false;
+            var home = ORIGINAL_BOUNDS !== null
+                ? L.latLngBounds(ORIGINAL_BOUNDS) : null;
+            var before = null;
+            // Sem foco no servidor, guardar a vista inicial do mapa.
+            if (home === null) {
+                setTimeout(function () { home = map.getBounds(); }, 0);
+            }
 
             var Back = L.Control.extend({
                 options: {position: "topright"},
@@ -183,7 +189,7 @@ class CityFocus(MacroElement):
                 setTimeout(function () {
                     var previous = find(INITIAL_CITY);
                     if (previous) {
-                        home = map.getBounds();
+                        if (home === null) { home = map.getBounds(); }
                         before = home;
                         setFocus(INITIAL_CITY);
                         afterClick = true;
@@ -209,12 +215,14 @@ class CityFocus(MacroElement):
     def __init__(
         self, layer: folium.GeoJson, *, auto_zoom: int = ZONE_ZOOM,
         initial_focus: str | None = None,
+        home_bounds: list[list[float]] | None = None,
     ):
         super().__init__()
         self._name = "CityFocus"
         self.layer = layer
         self.auto_zoom = int(auto_zoom)
         self.initial_focus_json = json.dumps(initial_focus)
+        self.home_bounds_json = json.dumps(home_bounds)
         self.dim_json = json.dumps(DIM_STYLE)
         self.focus_json = json.dumps(FOCUS_STYLE)
         self.css = FOCUS_CSS
