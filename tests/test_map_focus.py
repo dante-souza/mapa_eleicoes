@@ -18,7 +18,7 @@ def test_focus_wraps_layer_style_and_reacts_to_click_and_zoom():
     html = fmap.get_root().render()
     # Estilo da propria camada: o resetStyle do hover preserva o apagado.
     assert "layer.options.style = styleFor" in html
-    assert 'featureLayer.on("click"' in html and "fitBounds" in html
+    assert 'featureLayer.on("click"' in html and "zoomToCity" in html
     # Também aceita cliques do mapa quando o renderer Canvas não envia o
     # evento para a feição (e.sourceTarget sem dados do polígono).
     assert 'map.on("click", function (e)' in html
@@ -63,7 +63,7 @@ def test_focus_restores_selected_city_after_streamlit_rerun():
     assert '"3550308"' in html
     assert 'featureLayer.on("click"' in html
     assert "setFocus(INITIAL_CITY)" in html
-    assert "map.fitBounds(previous.getBounds()" in html
+    assert "zoomToCity(previous)" in html
 
 
 def test_focus_does_not_auto_zoom_without_saved_city():
@@ -88,7 +88,7 @@ def test_streamlit_folium_keeps_focus_code_in_component_javascript():
     component_js = generate_leaflet_string(fmap)
     assert 'featureLayer.on("click"' in component_js
     assert 'map.on("click", function (e)' in component_js
-    assert "map.fitBounds(featureLayer.getBounds()" in component_js
+    assert "zoomToCity(featureLayer)" in component_js
     assert "setFocus(INITIAL_CITY)" in component_js
 
 
@@ -105,3 +105,25 @@ def test_restored_city_keeps_original_bounds_for_back_control():
     assert "if (home === null) { home = map.getBounds(); }" in html
     assert "before = home;" in html
     assert '"Voltar ao mapa completo"' in html or "Voltar ao mapa completo" in html
+
+
+def test_municipality_click_forces_at_least_zonal_zoom():
+    from mapa_eleicoes.map_navigation import ZONE_ZOOM
+    fmap = folium.Map(location=[0, 0])
+    layer = folium.GeoJson(FC).add_to(fmap)
+    fmap.add_child(CityFocus(layer))
+    html = fmap.get_root().render()
+    assert f"var AUTO_ZOOM = {ZONE_ZOOM}" in html
+    assert "Math.max(" in html
+    assert "map.getBoundsZoom(bounds, false, [24, 24])" in html
+    assert "map.setView(bounds.getCenter(), targetZoom" in html
+    assert "zoomToCity(featureLayer)" in html
+
+
+def test_selector_focus_uses_the_same_zoom_function_as_click():
+    fmap = folium.Map(location=[0, 0])
+    layer = folium.GeoJson(FC).add_to(fmap)
+    fmap.add_child(CityFocus(layer, initial_focus="3550308"))
+    html = fmap.get_root().render()
+    assert "zoomToCity(previous)" in html
+    assert "zoomToCity(featureLayer)" in html
