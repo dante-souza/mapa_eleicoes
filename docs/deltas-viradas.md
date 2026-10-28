@@ -26,10 +26,10 @@ Para preparar zonas a partir desta branch: make zones-setup ZONE_UFS=SP. A corre
 
 Na página **Deltas e viradas**, abra **Camadas** no canto superior direito do mapa:
 
-1. **Divisões estaduais + setas** (inicial, rótulo de controle mantido como "Divisões + setas"): mostra **somente as divisas dos estados**, em qualquer zoom. Municípios e zonas são polígonos sem linhas, destinados exclusivamente ao hover. As setas vermelhas/azuis indicam a direção da variação relativa, com comprimento em pixels. A seta não representa deslocamento de eleitores.
-2. **Áreas por delta (sem setas)**: pinta estados/municípios/zonas conforme o zoom e o sinal de Δ (vermelho `#d60828` para Lula, azul `#272d97` para Flávio, neutro `#6272a4` para Δ = 0), **sem setas e sem linhas internas**, mantendo apenas as divisas estaduais.
+1. **Divisões + setas** (inicial): mantém as divisas estaduais e as setas coloridas no nível geográfico do zoom. Municípios e zonas preservam hover e ficam sem bordas internas, exceto o contorno da região clicada. As setas não representam deslocamento de eleitores.
+2. **Áreas por delta (sem setas)**: pinta estados/municípios/zonas conforme o zoom e o sinal de Δ (vermelho `#d60828` para Lula, azul `#272d97` para Flávio, neutro `#6272a4` para Δ = 0), **sem setas e COM divisas finas do nível exibido**, além das estaduais.
 
-O controle de camadas é do Leaflet e funciona no navegador: ao ativar uma das opções, a outra é desligada sem rerun do Streamlit, mantendo zoom, centro e mapa-base OSM. Também é possível desligar as duas, deixando somente os contornos territoriais sobre o mapa-base.
+O controle usa **dois botões de opção (radio)** implementados no Leaflet: exatamente um modo permanece ativo, sem checkboxes concorrentes ou seleção do tile OpenStreetMap. A alternância não faz rerun do Streamlit, preserva o centro/zoom e mantém o mapa-base OSM.
 
 **Desempenho:** polígonos geográficos serializados uma só vez, com coordenadas arredondadas a quatro casas decimais, reaproveitados pelos dois modos via troca de estilo JavaScript. As setas são desenhadas num único Canvas Leaflet em pixels, sem milhares de instâncias de `Marker`; as feições eleitorais continuam no GeoJSON para os tooltips. Regiões sem dados comparáveis mantêm a área interativa para hover, mas não recebem setas nem preenchimento eleitoral fictício. O filtro "Somente viradas" mantém apenas as divisas estaduais visíveis; os polígonos de municípios/zonas continuam interativos, sem linhas.
 
@@ -229,7 +229,7 @@ Na revisão mais recente da página de deltas:
   zoom continuam calculados em pixels e permanece a redução de
   sobreposições em áreas muito densas.
 - O modo **Áreas por delta (sem setas)** conserva o preenchimento por nível
-  de zoom, sem bordas internas.
+  de zoom, com divisas finas municipais/zonais ou estaduais conforme a escala.
 - **Escopo estrito:** alterados somente `mapa_eleicoes/swing_layers.py`,
   `tests/test_swing_layers.py` e esta documentação. O Atlas Eleitoral
   principal, `app.py`, `map_focus.py` e `interactive_map.py` não foram
@@ -351,3 +351,52 @@ mais, conferir locais se disponíveis. Verifique também **Voltar/Esc**.
 
 A visualização com os Parquets reais e o navegador ainda precisa de
 aceitação antes do merge do PR #11.
+
+## Modos mutuamente excludentes, divisas e clique para ampliar (revisão)
+
+O controle anterior (`folium.LayerControl` com dois overlays) usava
+checkboxes e permitia dois modos simultâneos ou nenhum modo. Agora existe
+um controle Leaflet com **radios exclusivos** (`Divisões + setas` e
+`Áreas por delta (sem setas)`). O OpenStreetMap permanece como mapa-base.
+
+| Zoom | Divisões no modo preenchido | Comportamento do clique |
+| --- | --- | --- |
+| 0–6 | Estados | Clique numa UF: enquadra e aproxima até municípios (zoom mínimo 7) |
+| 7–10 | Municípios, mais limites estaduais | Clique num município: enquadra e aproxima ao zoom das zonas (mínimo 11) |
+| 11+ | Zonas aproximadas quando preparadas; senão municípios | Clique em zona: amplia/destaca a área selecionada |
+
+As divisas do modo preenchido são **finas e escuras**, para evitar
+reintroduzir os riscos brancos vistos antes. A região selecionada
+recebe somente um contorno de foco discreto. O modo `Divisões + setas`
+continua sem divisas internas por padrão, com somente a borda estadual
+e a região clicada em destaque. As setas seguem o desenho de Canvas em
+vermelho/azul, **sem contorno branco**.
+
+O zoom e a troca dos radios acontecem diretamente no Leaflet e **não
+enviam eventos ao Streamlit**. `← Voltar ao mapa completo` ou `Esc`
+recuperam o enquadramento original. Tooltips e valores eleitorais
+continuam inalterados.
+
+**Limite conhecido:** quando a página está em `UF=Todas`, a malha
+zonal nacional não é pré-carregada. Assim, o clique municipal aproxima,
+mas o último nível fica municipal até selecionar uma UF cujo arquivo
+de zonas aproximadas já esteja preparado.
+
+Nesta revisão apenas o módulo `mapa_eleicoes/swing_layers.py`,
+seus testes e a documentação de deltas foram alterados. Não foi
+modificado nenhum arquivo da página principal do Atlas nem o cálculo
+matemático das diferenças de votos.
+
+### Checagem pelo Makefile
+
+```powershell
+git fetch origin
+git merge --ff-only origin/feature/deltas-viradas-municipio-zona-20261027
+make test
+make preview ANO=2026
+```
+
+Testar os dois radios, contornos do modo preenchido e cliques nas
+transições de zoom 6→7→11. Verificar o `Esc`/`Voltar` e, em outra aba
+ou página, se o clique e o foco do **Atlas Eleitoral principal** seguem
+normais. A PR permanece draft até essa validação no Windows.
