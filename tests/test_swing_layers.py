@@ -249,6 +249,7 @@ def test_original_map_page_runs_as_classic_streamlit_homepage():
     assert 'exec(compile(' in homepage
     assert not (root / "atlas.py").exists()
     assert makefile.count("-m streamlit run Atlas_Eleitoral.py") == 2
-    assert 'CityFocus(results_layer, initial_focus=selected_city)' in app
+    assert "municipal_focus_bounds(geometry, selected_city)" in app
+    assert "home_bounds=full_bounds" in app
     assert "render_explorer(" in app
     assert (root / "pages" / "1_Deltas_e_viradas.py").is_file()
