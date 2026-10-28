@@ -150,14 +150,24 @@ class CityFocus(MacroElement):
             // MouseEvent de um GeoJSON propagado nem sempre fornece e.layer;
             // sourceTarget é a referência moderna, mas o listener direto
             // evita a dependência de ambos e funciona também com Canvas.
+            // A caixa de um município territorialmente grande pode caber
+            // na tela com zoom 7/8, abaixo de ZONE_ZOOM. O clique precisa
+            // revelar suas zonas; portanto o zoom mínimo é AUTO_ZOOM.
+            function zoomToCity(featureLayer) {
+                var bounds = featureLayer.getBounds();
+                var targetZoom = Math.max(
+                    AUTO_ZOOM, map.getBoundsZoom(bounds, false, [24, 24])
+                );
+                // A câmera é sempre definida pelo polígono IBGE, não por
+                // um centro estimado pelo nome/posição do eleitor.
+                map.setView(bounds.getCenter(), targetZoom, {animate: false});
+            }
             function focusCity(featureLayer) {
                 var id = idOf(featureLayer);
                 if (!id) { return; }
                 if (focus === null) { before = map.getBounds(); }
-                // Enquadrar ANTES de aplicar milhares de estilos municipais:
-                // a câmera responde imediatamente mesmo no mapa nacional.
                 afterClick = true;
-                map.fitBounds(featureLayer.getBounds(), {padding: [24, 24]});
+                zoomToCity(featureLayer);
                 setFocus(id);
             }
             var handledClick = null;
@@ -193,7 +203,7 @@ class CityFocus(MacroElement):
                         before = home;
                         setFocus(INITIAL_CITY);
                         afterClick = true;
-                        map.fitBounds(previous.getBounds(), {padding: [24, 24]});
+                        zoomToCity(previous);
                     }
                 }, 0);
             }
