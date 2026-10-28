@@ -155,8 +155,9 @@ class CityFocus(MacroElement):
             // revelar suas zonas; portanto o zoom mínimo é AUTO_ZOOM.
             function zoomToCity(featureLayer) {
                 var bounds = featureLayer.getBounds();
-                var targetZoom = Math.max(
-                    AUTO_ZOOM, map.getBoundsZoom(bounds, false, [24, 24])
+                var targetZoom = Math.min(
+                    AUTO_ZOOM + 2,
+                    Math.max(AUTO_ZOOM, map.getBoundsZoom(bounds, false, [24, 24]))
                 );
                 // A câmera é sempre definida pelo polígono IBGE, não por
                 // um centro estimado pelo nome/posição do eleitor.
