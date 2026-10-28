@@ -90,3 +90,25 @@ def focus_for_view(
     if should_render_sites(view.get("zoom"), True):
         return municipality_at(geometry, view.get("center"))
     return None
+
+
+def municipal_focus_bounds(
+    geometries: gpd.GeoDataFrame, municipality_code: str | None,
+) -> list[list[float]] | None:
+    """Limites oficiais da cidade clicada para restaurar o zoom no servidor.
+
+    Sem inferir centro por nome ou posição do mouse. Usa o mesmo IBGE
+    map_id dos polígonos exibidos no Leaflet. O retorno tem o contrato
+    Folium fit_bounds: [[latitude_sul, longitude_oeste],
+                       [latitude_norte, longitude_leste]].
+    """
+    if (not municipality_code or "map_id" not in geometries.columns
+            or geometries.empty):
+        return None
+    selected = geometries.loc[
+        geometries["map_id"].astype(str) == str(municipality_code)
+    ]
+    if selected.empty:
+        return None
+    west, south, east, north = (float(value) for value in selected.total_bounds)
+    return [[south, west], [north, east]]
