@@ -173,3 +173,29 @@ def test_duplicate_frontend_state_does_not_reset_focus():
         assert interactive_map.st.session_state["atlas_explorer_focus"] == {
             "city": "3550308"
         }
+
+
+def test_main_page_has_one_automatic_map_no_geographical_detail_panel():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
+    assert 'level = "Automático"' in src
+    assert 'effective_level = "Município"' in src
+    assert 'st.radio("Detalhamento geográfico"' not in src
+    assert 'st.selectbox("Município"' in src
+    assert 'st.selectbox("Zona"' in src
+    assert 'CityFocus(' in src
+
+
+def test_zone_overlay_follows_the_focused_city_not_first_900_state_zones():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "mapa_eleicoes" /
+           "interactive_map.py").read_text(encoding="utf-8")
+    assert 'wanted = {city} if city else (cities if uf != "Todas" else set())' in src
+    assert 'base_map.add_child(group)' in src
+    assert 'base_map.add_child(ZoomPanes(explorer_gates("Automático")))' in src
+    assert 'gate_detail =' not in src
+    assert 'feature_group_to_add=dynamic or None' in src
+    # Camadas zonais não entram em dynamic; usado somente para locais.
+    assert 'dynamic.append(group)' not in src.split('def _site_layer(', 1)[0]
