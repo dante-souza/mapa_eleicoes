@@ -29,6 +29,7 @@ from mapa_eleicoes.geo_payload import (
     BoundedGeoJson, feature_collection, leaflet_bounds, rounded_geometries,
 )
 from mapa_eleicoes.map_focus import CityFocus, FocusBackdrop, context_layer
+from mapa_eleicoes.map_navigation import municipal_focus_bounds
 from mapa_eleicoes.zone_geometry import UF_PREFIX
 from mapa_eleicoes.zone_map import districts_available
 
@@ -318,9 +319,13 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
         highlight_function=lambda _: {"weight": 1.5, "color": "#f8f8f2"},
         tooltip=folium.GeoJsonTooltip(fields=fields, aliases=aliases, sticky=False),
     ).add_to(map_view)
+    # Sempre guardar os limites do recorte completo para o botao Voltar.
+    full_bounds = [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
+    initial_bounds = full_bounds
     if level == "Município" and detail != ZONE_DETAIL and len(geometry) > 1:
-        # Clique/zoom acendem a cidade no navegador. Se o Streamlit fizer
-        # rerun para buscar locais, preservar a cidade e o enquadramento.
+        # O navegador enquadra a cidade instantaneamente no clique.
+        # Em reruns do Streamlit, reconstruir o mapa com a câmera já
+        # enquadrada: não depender de timing do JavaScript do componente.
         current_scope = (year, uf, cargo, turno, municipality, str(zone), mode, detail)
         saved_focus = (
             st.session_state.get("atlas_explorer_focus")
@@ -332,11 +337,14 @@ def draw_map(geometry: gpd.GeoDataFrame, data: pl.DataFrame, mode: str,
             if isinstance(saved_focus, dict) and saved_focus.get("city")
             else None
         )
-        map_view.add_child(CityFocus(results_layer, initial_focus=selected_city))
+        initial_bounds = municipal_focus_bounds(geometry, selected_city) or full_bounds
+        map_view.add_child(CityFocus(
+            results_layer, initial_focus=selected_city, home_bounds=full_bounds,
+        ))
     elif single_city:
         # Cidade escolhida no seletor: ja nasce em destaque, fundo escuro.
         map_view.add_child(FocusBackdrop())
-    map_view.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+    map_view.fit_bounds(initial_bounds)
     map_view.get_root().html.add_child(folium.Element(legend_html(
         "percentual" if mode == "Votação de candidato" else "margem"
     )))
