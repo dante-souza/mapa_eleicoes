@@ -73,6 +73,11 @@ class DeltaZoomLayers(MacroElement):
         }
         function styleFor(feature, level, active) {
             var matching = matchesFocus(feature);
+            var highlighted = focus &&
+                ((focus.kind === "city" && level === "city" &&
+                  feature.properties.key === focus.key) ||
+                 (focus.kind === "zone" && level === "zone" &&
+                  feature.properties.key === focus.key));
             if (mode === "filled") {
                 // O modo preenchido deve EXIBIR as divisões do nível
                 // visível: estados -> municípios -> zonas. Linhas finas
@@ -80,13 +85,20 @@ class DeltaZoomLayers(MacroElement):
                 var boundary = level === "state" ? 1.25 :
                                level === "zone" ? 0.72 : 0.62;
                 if (!active) {
-                    // Contorno municipal de contexto acima das zonas.
-                    return {stroke: true, color: "#343246", weight: 0.85,
-                            opacity: 0.7, fill: false, fillOpacity: 0};
+                    // No zoom zonal mantém o município como contexto.
+                    // A região clicada recebe um contorno de foco.
+                    return {stroke: true,
+                            color: highlighted ? "#f8f8f2" : "#343246",
+                            weight: highlighted ? 2.0 : 0.85,
+                            opacity: highlighted ? 1 : 0.7,
+                            fill: false, fillOpacity: 0};
                 }
                 return {
-                    stroke: true, color: matching ? "#292735" : "#22212d",
-                    weight: boundary, opacity: 0.86,
+                    stroke: true,
+                    color: highlighted ? "#f8f8f2" :
+                           matching ? "#292735" : "#22212d",
+                    weight: highlighted ? 2.0 : boundary,
+                    opacity: highlighted ? 1 : 0.86,
                     fill: true, fillColor: feature.properties.cor,
                     fillOpacity: feature.properties.com_dados ?
                                  (matching ? 0.72 : 0.15) : 0.001
@@ -94,8 +106,11 @@ class DeltaZoomLayers(MacroElement):
             }
             // No modo de setas, apenas a borda estadual independente
             // permanece visível. Municípios/zonas retêm o hover.
-            return {stroke: false, weight: 0, opacity: 0,
-                    fill: true, fillOpacity: 0.001};
+            return highlighted
+                ? {stroke: true, color: "#f8f8f2", weight: 1.8,
+                   fill: true, fillOpacity: 0.001}
+                : {stroke: false, weight: 0, opacity: 0,
+                   fill: true, fillOpacity: 0.001};
         }
         function showLayer(layer, visible, level, active) {
             if (!layer) { return; }
@@ -409,7 +424,7 @@ def _polygons(geo: gpd.GeoDataFrame, *, approx_zone: bool) -> dict:
                 )
             )
             properties["city"] = (
-                str(geo["codigo_ibge"].iloc[index])
+                str(geo["codigo_ibge"].iloc[index]).zfill(7)
                 if has_city_code and geo["codigo_ibge"].iloc[index] is not None
                 else identifier if len(identifier) == 7 else ""
             )
