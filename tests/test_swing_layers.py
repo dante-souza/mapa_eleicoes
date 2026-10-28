@@ -59,7 +59,9 @@ def test_radio_modes_are_mutually_exclusive_and_keep_osm_tiles():
     assert "L.control.layers(" not in html
     assert "openstreetmap.org" in html
     # As mudanças de modo não alteram zoom, centro ou mapa-base.
-    assert 'map.on("zoomend moveend resize", sync)' in html
+    assert 'map.on("zoomend", sync)' in html
+    assert 'map.on("moveend resize", scheduleRedraw)' in html
+    assert "L.Util.requestAnimFrame(function()" in html
     assert 'redraw()' in html
     assert "paintArrow(ctx" in html
     assert 'atlas-swing-arrows' in html
@@ -129,7 +131,9 @@ def test_zoom_switches_to_prepared_zones_without_reloading_tiles():
     )
     html = mapa.get_root().render()
     assert 'if (zoom >= high && zones)' in html
-    assert 'map.on("zoomend moveend resize", sync)' in html
+    assert 'map.on("zoomend", sync)' in html
+    assert 'map.on("moveend resize", scheduleRedraw)' in html
+    assert "L.Util.requestAnimFrame(function()" in html
     assert '"state":' in html
     assert '"city":' in html
     assert '"zone":' in html
@@ -206,7 +210,8 @@ def test_click_zoom_transitions_and_focus_reset_like_atlas():
     assert 'map.fitBounds(homeBounds' in html
     assert '← Voltar ao mapa completo' in html
     assert 'e.key === "Escape"' in html
-    assert 'L.DomEvent.stopPropagation(e.originalEvent)' in html
+    assert 'L.DomEvent.stopPropagation(e.originalEvent)' not in html
+    assert 'map.dragging.moved()' in html
     assert 'setMode(' in html
 
 
@@ -282,6 +287,30 @@ def test_selected_polygon_highlight_is_separate_from_arrow_stroke():
     # a seta em si permanece um único stroke vermelho/azul, sem halo.
     assert source.count('ctx.strokeStyle =') == 1
     assert 'ctx.strokeStyle = delta > 0 ? "#d60828" : "#272d97"' in source
+
+
+def test_panning_never_restylizes_polygons_or_zooms_the_camera():
+    """The previous moveend -> sync path locked drag on large GeoJSON."""
+    import inspect
+    from mapa_eleicoes.swing_layers import DeltaZoomLayers
+
+    source = inspect.getsource(DeltaZoomLayers)
+    assert 'map.on("zoomend", sync)' in source
+    assert 'map.on("moveend resize", scheduleRedraw)' in source
+    assert 'map.on("moveend", sync)' not in source
+    assert "L.Util.requestAnimFrame(function()" in source
+    assert 'if (drawFrame !== null) { return; }' in source
+    assert 'map.dragging.moved()' in source
+    assert 'L.DomEvent.stopPropagation(e.originalEvent)' not in source
+    # Only explicit shape clicks and the Back control are allowed
+    # to programmatically change zoom/center.
+    redraw = source.split("function redraw() {", 1)[1].split(
+        "function scheduleRedraw()", 1
+    )[0]
+    assert "map.setView(" not in redraw
+    assert "map.fitBounds(" not in redraw
+    assert "setStyle(" not in redraw
+    assert "showLayer(" not in redraw
 
 
 def test_original_map_page_runs_as_classic_streamlit_homepage():
