@@ -28,7 +28,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from mapa_eleicoes.map_navigation import (
-    municipality_at, state_for_municipality,
+    municipality_at, state_for_municipality, valid_position,
 )
 from mapa_eleicoes.map_panes import (
     DISTRICT_PANE, SITE_PANE, ZONE_PANE, ClusterAssets, ZoomPanes, explorer_gates,
@@ -287,18 +287,36 @@ def _handle_click(
 ) -> None:
     if not response:
         return
-    # Clique geográfico global primeiro: mais estável que o clique de
-    # feição para polígonos grandes e para Canvas. Fallback legado depois.
-    click = response.get("last_clicked") or response.get("last_object_clicked")
-    if not (isinstance(click, dict) and {"lat", "lng"} <= set(click)):
+    # O frontend mantém a coordenada do clique anterior nos dois campos.
+    # Se o Canvas atualizar só last_object_clicked, nunca reutilizar um
+    # last_clicked antigo. Escolher o evento que MUDOU neste callback.
+    previous = st.session_state.get("atlas_explorer_last_click")
+    previous = previous if isinstance(previous, dict) else {}
+
+    def coordinate_token(point: dict | None) -> tuple[float, float] | None:
+        if not isinstance(point, dict):
+            return None
+        position = valid_position(point)
+        return tuple(round(value, 6) for value in position) if position else None
+
+    map_click = response.get("last_clicked")
+    object_click = response.get("last_object_clicked")
+    map_token = coordinate_token(map_click)
+    object_token = coordinate_token(object_click)
+    object_count = response.get("last_object_clicked_count")
+    if map_token is not None and map_token != previous.get("map"):
+        click = map_click
+    elif object_token is not None and (
+        object_token != previous.get("object")
+        or object_count != previous.get("object_count")
+    ):
+        click = object_click
+    else:
         return
-    token = (
-        response.get("last_object_clicked_count"),
-        round(float(click["lat"]), 6), round(float(click["lng"]), 6),
-    )
-    if token == st.session_state.get("atlas_explorer_last_click"):
-        return
-    st.session_state["atlas_explorer_last_click"] = token
+    st.session_state["atlas_explorer_last_click"] = {
+        "map": map_token, "object": object_token,
+        "object_count": object_count,
+    }
     if districts is not None:
         # Mapa por zona: o clique seleciona a zona (preenche o seletor).
         clicked_zone = zone_at(districts, click)
