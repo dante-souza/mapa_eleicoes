@@ -6,3 +6,4 @@ folium>=0.18,<1
 streamlit>=1.41,<2
 streamlit-folium>=0.24,<1
 pytest>=8,<10
+pydeck>=0.9,<1
