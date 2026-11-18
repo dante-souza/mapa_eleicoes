@@ -54,6 +54,9 @@ help:
 	@echo "                                          areas APROXIMADAS de zona (setores IBGE 2022 + locais TSE)"
 	@echo "  make app-ready ANO=2026                  prepara fontes, geometria e dados para mapa"
 	@echo "  make preview                            abrir mapa com dados ja processados (parciais)"
+	@echo "  make preview-3d ANO=2026                abrir laboratorio 3D com Parquets locais"
+	@echo "  make run-3d ANO=2026                    preparar dados e abrir laboratorio 3D"
+	@echo "  make test-3d                            testes da camada experimental 3D"
 	@echo "  make prepare-data ANO=2026 DIR=C:/Downloads   le ZIPs de DIR e processa"
 	@echo "  make data-pack ANO=2026                 gera data/bundles/tse_raw_2026_bundle.zip"
 	@echo "  make data-unpack BUNDLE=arquivo.zip     extrai bundle para data/raw/ANO/"
@@ -196,3 +199,14 @@ compile-offline:
 .PHONY: import-offline
 import-offline:
 	$(PYTHON) -m mapa_eleicoes.cli import --file "$(FILE)" --year $(ANO)
+
+# PoC 3D isolada: nenhum destes alvos altera o Atlas Folium.
+.PHONY: preview-3d run-3d test-3d
+preview-3d: bootstrap
+	$(VENV_PY) -m streamlit run pages/01_Mapa_3D.py
+
+run-3d: app-ready
+	$(VENV_PY) -m streamlit run pages/01_Mapa_3D.py
+
+test-3d: bootstrap
+	$(VENV_PY) -m pytest -q tests/test_electoral_3d.py
